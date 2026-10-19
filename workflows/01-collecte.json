@@ -1,0 +1,415 @@
+{
+  "id": "JH01Collecte0001",
+  "name": "01 · Collecte des offres",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 📥 Collecte des offres\nToutes les 4 h (8h → 20h), ce workflow :\n1. interroge l'**API France Travail** pour chaque recherche active (table `searches`)\n2. lit les **flux RSS** d'offres (table `feeds`)\n3. normalise et dédoublonne les offres, puis les enregistre dans **PostgreSQL**\n4. déclenche l'**analyse IA** des nouvelles offres\n\n💡 Ajoute des recherches depuis Telegram : `/recherche_ajouter mots-clés | département | contrat`",
+        "height": 300,
+        "width": 420,
+        "color": 4
+      },
+      "id": "5375040d-1c39-50b1-b57a-c7c8457617de",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8-20/4 * * *"
+            }
+          ]
+        }
+      },
+      "id": "08412e86-b1af-5edb-850c-45f721378cea",
+      "name": "Toutes les 4h (8h-20h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "221d0e0e-ee2c-5aea-8501-c1a1a0c7f921",
+      "name": "Lancer manuellement",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "ca518e12-75b7-5358-b2d0-4255b42d9b69",
+      "name": "Appelé par le bot (/collecter)",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, label, keywords, department, contract_type\nFROM searches\nWHERE active\nORDER BY id;",
+        "options": {}
+      },
+      "id": "664cb7ee-03a8-5521-8dd9-ec2dc4e607b5",
+      "name": "Recherches actives",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "url": "={{ ($env.FT_API_URL || \"https://api.francetravail.io/partenaire/offresdemploi/v2\").replace(/\\/$/, \"\") }}/offres/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "oAuth2Api",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify(Object.fromEntries(Object.entries({ motsCles: $json.keywords, departement: $json.department, typeContrat: $json.contract_type, publieeDepuis: 3, range: \"0-49\", sort: 1 }).filter(([k, v]) => v !== null && v !== undefined && v !== \"\"))) }}",
+        "options": {
+          "timeout": 30000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 400
+            }
+          }
+        }
+      },
+      "id": "9d5f2ba9-14a2-5ac2-8c76-7bada1f47820",
+      "name": "France Travail · offres",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        0
+      ],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "jhFranceTravail1",
+          "name": "Job Hunter · France Travail"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retrouve l'élément d'origine d'un item grâce au suivi des « paired items » de n8n\nconst origin = (node, i) => { try { return $(node).itemMatching(i)?.json; } catch (e) { return $(node).all()[i]?.json; } };\n\n// Transforme la réponse France Travail en lignes prêtes pour la table `jobs`\nconst jobs = [];\nconst stats = [];\nconst seen = new Set();\n\n$input.all().forEach((item, i) => {\n  const search = origin('Recherches actives', i);\n  if (!search?.id) return; // aucune recherche active\n  const offres = Array.isArray(item.json.resultats) ? item.json.resultats : [];\n  stats.push({ id: search.id, cnt: offres.length });\n\n  for (const o of offres) {\n    if (!o?.id || !o?.intitule || seen.has(o.id)) continue;\n    seen.add(o.id);\n    jobs.push({\n      source: 'france_travail',\n      external_id: String(o.id),\n      url: o.origineOffre?.urlOrigine || `https://candidat.francetravail.fr/offres/recherche/detail/${o.id}`,\n      title: o.intitule.trim(),\n      company: o.entreprise?.nom || null,\n      location: o.lieuTravail?.libelle || null,\n      contract_type: o.typeContratLibelle || o.typeContrat || null,\n      salary: o.salaire?.libelle || o.salaire?.commentaire || null,\n      description: (o.description || '').slice(0, 8000),\n      published_at: o.dateCreation || null,\n      search_id: search.id,\n      feed_id: null,\n    });\n  }\n});\n\nreturn [{ json: { origin: 'France Travail', jobs, search_stats: stats, feed_stats: [] } }];\n"
+      },
+      "id": "bab55f0f-0ca8-5ca2-b5ee-5dac8c24d017",
+      "name": "Normaliser France Travail",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, url\nFROM feeds\nWHERE active\nORDER BY id;",
+        "options": {}
+      },
+      "id": "3eb44a91-8f8f-5fdf-81e1-ee13ad42ebe6",
+      "name": "Flux RSS actifs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "id": "69fb75d0-8536-5eb0-8289-96545bc48264",
+      "name": "Lire les flux RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        260
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retrouve l'élément d'origine d'un item grâce au suivi des « paired items » de n8n\nconst origin = (node, i) => { try { return $(node).itemMatching(i)?.json; } catch (e) { return $(node).all()[i]?.json; } };\n\n// Garde les offres des 14 derniers jours et note l'état de santé de chaque flux\nconst since = Date.now() - 14 * 24 * 3600 * 1000;\nconst jobs = [];\nconst stats = new Map();\nconst seen = new Set();\n\n$input.all().forEach((item, i) => {\n  const feed = origin('Flux RSS actifs', i);\n  if (!feed?.id) return; // aucun flux actif\n  const s = stats.get(feed.id) ?? { id: feed.id, ok: true, error: null, cnt: 0 };\n  stats.set(feed.id, s);\n\n  const a = item.json;\n  if (a.error) {\n    s.ok = false;\n    s.error = String(a.error.message ?? a.error).slice(0, 500);\n    return;\n  }\n  if (!a.title || !a.link) return;\n  const date = new Date(a.isoDate || a.pubDate || Date.now());\n  if (Number.isNaN(date.getTime()) || date.getTime() < since) return;\n\n  const externalId = String(a.guid || a.link);\n  if (seen.has(externalId)) return;\n  seen.add(externalId);\n\n  // Beaucoup de flux utilisent le format « Entreprise: Intitulé du poste »\n  let title = a.title.trim();\n  let company = a.creator || null;\n  const m = title.match(/^(.{2,80}?):\\s+(.+)$/);\n  if (m && !company) { company = m[1].trim(); title = m[2].trim(); }\n\n  s.cnt++;\n  jobs.push({\n    source: 'rss',\n    external_id: externalId,\n    url: a.link,\n    title,\n    company,\n    location: a.region || 'Remote',\n    contract_type: null,\n    salary: null,\n    description: (a.contentSnippet || a.content || '').slice(0, 8000),\n    published_at: date.toISOString(),\n    search_id: null,\n    feed_id: feed.id,\n  });\n});\n\nreturn [{ json: { origin: 'RSS', jobs, search_stats: [], feed_stats: [...stats.values()] } }];\n"
+      },
+      "id": "ef76a0be-8518-5763-9c1f-ea963621190f",
+      "name": "Normaliser RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH data AS (\n  SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(\n    source text, external_id text, url text, title text, company text, location text,\n    contract_type text, salary text, description text, published_at timestamptz,\n    search_id int, feed_id int)\n), inserted AS (\n  INSERT INTO jobs (source, external_id, url, title, company, location, contract_type,\n                    salary, description, published_at, search_id, feed_id)\n  SELECT source, external_id, url, title, company, location, contract_type,\n         salary, description, published_at, search_id, feed_id\n  FROM data\n  ON CONFLICT (source, external_id) DO NOTHING\n  RETURNING id\n), search_stats AS (\n  UPDATE searches s SET last_run_at = now(), last_count = x.cnt\n  FROM jsonb_to_recordset($2::jsonb) AS x(id int, cnt int)\n  WHERE s.id = x.id\n  RETURNING 1\n), feed_stats AS (\n  UPDATE feeds f SET\n    last_fetched_at = now(),\n    last_count      = x.cnt,\n    error_count     = CASE WHEN x.ok THEN 0 ELSE f.error_count + 1 END,\n    last_error      = x.error,\n    active          = CASE WHEN x.ok THEN true ELSE f.error_count + 1 < 10 END\n  FROM jsonb_to_recordset($3::jsonb) AS x(id int, ok boolean, error text, cnt int)\n  WHERE f.id = x.id\n  RETURNING 1\n)\nSELECT $4::text AS origin,\n       (SELECT count(*) FROM data)::int     AS collected,\n       (SELECT count(*) FROM inserted)::int AS inserted,\n       (SELECT count(*) FROM search_stats)::int + (SELECT count(*) FROM feed_stats)::int AS sources;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.jobs), JSON.stringify($json.search_stats), JSON.stringify($json.feed_stats), $json.origin ] }}"
+        }
+      },
+      "id": "caf0f913-f79a-5c43-a6f5-0b20f80715e0",
+      "name": "Enregistrer les offres",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        980,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "83edf2ee-c0ac-5b61-bdfe-52138ae8184b",
+              "leftValue": "={{ $json.inserted }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "d51e39f7-5214-53cf-9cf1-b39a44aa0b06",
+      "name": "Nouvelles offres ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "JH02AnalyseIA001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "4ba4ada3-1ea1-5385-b6ba-5b3a851f5968",
+      "name": "Lancer l'analyse IA",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1460,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Toutes les 4h (8h-20h)": {
+      "main": [
+        [
+          {
+            "node": "Recherches actives",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Flux RSS actifs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recherches actives": {
+      "main": [
+        [
+          {
+            "node": "France Travail · offres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "France Travail · offres": {
+      "main": [
+        [
+          {
+            "node": "Normaliser France Travail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normaliser France Travail": {
+      "main": [
+        [
+          {
+            "node": "Enregistrer les offres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lancer manuellement": {
+      "main": [
+        [
+          {
+            "node": "Flux RSS actifs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Recherches actives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Appelé par le bot (/collecter)": {
+      "main": [
+        [
+          {
+            "node": "Flux RSS actifs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Recherches actives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flux RSS actifs": {
+      "main": [
+        [
+          {
+            "node": "Lire les flux RSS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lire les flux RSS": {
+      "main": [
+        [
+          {
+            "node": "Normaliser RSS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normaliser RSS": {
+      "main": [
+        [
+          {
+            "node": "Enregistrer les offres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enregistrer les offres": {
+      "main": [
+        [
+          {
+            "node": "Nouvelles offres ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nouvelles offres ?": {
+      "main": [
+        [
+          {
+            "node": "Lancer l'analyse IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true,
+    "errorWorkflow": "JH08Erreurs00001"
+  },
+  "pinData": {},
+  "active": true,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

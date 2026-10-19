@@ -1,0 +1,1633 @@
+{
+  "id": "JH03BotTelegram1",
+  "name": "03 · Bot Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🤖 Bot Telegram : la télécommande de ta recherche\n**Routeur** → analyse chaque message, commande ou clic sur un bouton, puis l'aiguille vers la bonne branche :\n- 🗄️ **Commandes base de données** : /offres, /offre_12, /chercher, /candidatures, /stats, /recherches…\n- ✍️ **Lettre** : /lettre_12 ou bouton → sous-workflow 04\n- 🧠 **IA** : /entretien_12 (préparation d'entretien) ou question libre (coach carrière)\n- 📥 **Import** : colle le lien d'une offre trouvée ailleurs → extraction IA + analyse\n- 📄 **CV** : envoie ton CV en PDF → ton profil est mis à jour automatiquement\n\n🔒 Seul ton compte (TELEGRAM_CHAT_ID) peut piloter le bot.",
+        "height": 380,
+        "width": 500,
+        "color": 4
+      },
+      "id": "397ee45c-351d-5332-b74d-b03b2ab22f7a",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "id": "dfe2db1d-74f4-51c0-a87e-d8919f2eb879",
+      "name": "Message Telegram",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "6f1c7a52-3c1e-4f0b-9a57-6a0e1b0c2d11"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a349f944-1e3d-5998-8164-5dc37301d94f",
+              "leftValue": "={{ String($json.message?.chat?.id ?? $json.callback_query?.message?.chat?.id ?? \"\") }}",
+              "rightValue": "={{ String($env.TELEGRAM_CHAT_ID) }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "315baef5-a7a5-5a25-b8c7-40c152c76475",
+      "name": "Utilisateur autorisé ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.message?.chat?.id ?? $json.callback_query?.message?.chat?.id }}",
+        "text": "=🔒 Ce bot est privé.\n\nTon identifiant Telegram est : <code>{{ $json.message?.chat?.id ?? $json.callback_query?.message?.chat?.id }}</code>\nSi c'est ton bot, ajoute-le dans le fichier <code>.env</code> (TELEGRAM_CHAT_ID) puis redémarre n8n.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "c471dff3-2f99-541f-8dc0-025b956dd104",
+      "name": "Bot privé",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        420
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "c7b8d39c-0ce6-5dcd-83dc-d9989c18d2d1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\n// =====================================================================\n//  ROUTEUR : transforme un message / clic Telegram en action\n//  route = db | letter | ai | import | cv | collect | report | text\n// =====================================================================\nconst STATUS_FR = {\n  nouveau: 'new', selection: 'shortlisted', sélection: 'shortlisted', postule: 'applied', postulé: 'applied',\n  entretien: 'interview', offre: 'offer', refus: 'rejected', ignore: 'ignored', ignoré: 'ignored',\n  'sans-reponse': 'ghosted', 'sans-réponse': 'ghosted',\n};\n\nconst SQL = {\n  offres: `SELECT id, title, company, location, score, status FROM jobs\n           WHERE score IS NOT NULL AND status IN ('new','shortlisted') AND collected_at > now() - interval '14 days'\n           ORDER BY score DESC, collected_at DESC LIMIT 10`,\n  offre: `SELECT j.*, a.applied_at, a.followup_count,\n            (SELECT count(*) FROM documents d WHERE d.job_id = j.id AND d.kind = 'cover_letter')::int AS letters\n          FROM jobs j LEFT JOIN applications a ON a.job_id = j.id WHERE j.id = $1::int`,\n  chercher: `SELECT id, title, company, score, status FROM jobs, websearch_to_tsquery('french', $1) q\n             WHERE search_vector @@ q ORDER BY ts_rank(search_vector, q) DESC, score DESC NULLS LAST LIMIT 10`,\n  apply: `WITH j AS (UPDATE jobs SET status = 'applied' WHERE id = $1::int RETURNING id, title, company),\n               a AS (INSERT INTO applications (job_id, applied_at, next_followup_at)\n                     SELECT id, now(), now() + interval '7 days' FROM j\n                     ON CONFLICT (job_id) DO UPDATE SET applied_at = now(), next_followup_at = now() + interval '7 days'\n                     RETURNING id, next_followup_at)\n          SELECT j.*, a.id AS application_id, to_char(a.next_followup_at, 'DD/MM') AS followup_date FROM j, a`,\n  status: `WITH j AS (UPDATE jobs SET status = $2 WHERE id = $1::int RETURNING id, title, company, status),\n               a AS (INSERT INTO applications (job_id) SELECT id FROM j WHERE status IN ('interview','offer','rejected')\n                     ON CONFLICT (job_id) DO NOTHING RETURNING id)\n          SELECT j.* FROM j`,\n  followup: `UPDATE applications a SET followup_count = a.followup_count + 1, last_followup_at = now(),\n               next_followup_at = now() + interval '7 days'\n             FROM jobs j WHERE a.id = $1::int AND j.id = a.job_id\n             RETURNING a.id, a.followup_count, j.title, to_char(a.next_followup_at, 'DD/MM') AS next_date`,\n  snooze: `UPDATE applications a SET next_followup_at = now() + interval '3 days'\n           FROM jobs j WHERE a.id = $1::int AND j.id = a.job_id\n           RETURNING a.id, j.title, to_char(a.next_followup_at, 'DD/MM') AS next_date`,\n  candidatures: `SELECT j.id, j.title, j.company, j.status, to_char(a.applied_at, 'DD/MM') AS applied,\n                   (current_date - a.applied_at::date) AS days, a.followup_count\n                 FROM jobs j JOIN applications a ON a.job_id = j.id\n                 WHERE j.status IN ('applied','interview','offer')\n                 ORDER BY CASE j.status WHEN 'offer' THEN 0 WHEN 'interview' THEN 1 ELSE 2 END, a.applied_at DESC\n                 LIMIT 30`,\n  stats: `SELECT (SELECT count(*) FROM jobs)::int AS total,\n                 (SELECT count(*) FROM jobs WHERE scored_at IS NOT NULL)::int AS scored,\n                 (SELECT round(avg(score)) FROM jobs)::int AS avg_score,\n                 (SELECT count(*) FROM jobs WHERE collected_at > now() - interval '7 days')::int AS week_collected,\n                 (SELECT count(*) FROM applications)::int AS applications,\n                 (SELECT count(*) FROM status_history WHERE to_status = 'applied' AND changed_at > now() - interval '7 days')::int AS week_applied,\n                 (SELECT count(*) FROM jobs WHERE status = 'interview')::int AS interviews,\n                 (SELECT count(*) FROM jobs WHERE status = 'offer')::int AS offers,\n                 (SELECT count(*) FROM jobs WHERE status = 'rejected')::int AS rejected,\n                 (SELECT count(*) FROM jobs WHERE status = 'ghosted')::int AS ghosted,\n                 (SELECT count(*) FROM jobs j JOIN applications a ON a.job_id = j.id WHERE j.status IN ('interview','offer','rejected'))::int AS answered,\n                 (SELECT coalesce(json_agg(t), '[]') FROM (SELECT skill, occurrences FROM v_missing_skills LIMIT 5) t) AS missing_skills`,\n  recherches: `SELECT id, label, keywords, department, contract_type, active, last_count,\n                 to_char(last_run_at, 'DD/MM HH24:MI') AS last_run FROM searches ORDER BY active DESC, id`,\n  recherche_ajouter: `INSERT INTO searches (label, keywords, department, contract_type)\n                      VALUES ($1, $1, NULLIF($2, ''), NULLIF(upper($3), '')) RETURNING *`,\n  recherche_retirer: `UPDATE searches SET active = false WHERE id = $1::int RETURNING id, label`,\n  flux: `SELECT id, name, url, active, last_count, error_count, last_error FROM feeds ORDER BY active DESC, id`,\n  flux_ajouter: `INSERT INTO feeds (name, url) VALUES (COALESCE(NULLIF($2, ''), $1), $1)\n                 ON CONFLICT (url) DO UPDATE SET active = true, error_count = 0 RETURNING *`,\n  flux_retirer: `UPDATE feeds SET active = false WHERE id = $1::int RETURNING id, name`,\n  profil: `SELECT * FROM profile WHERE id = 1`,\n  seuil: `UPDATE profile SET alert_threshold = $1::int, updated_at = now() WHERE id = 1 RETURNING alert_threshold`,\n  reanalyser: `WITH u AS (UPDATE jobs SET scored_at = NULL, score_attempts = 0, scoring_started_at = NULL\n                 WHERE status IN ('new','shortlisted') AND collected_at > now() - interval '14 days' RETURNING 1)\n               SELECT count(*)::int AS n FROM u`,\n};\n\nconst HELP = [\n  '🤖 <b>Job Hunter IA · commandes</b>',\n  '',\n  '<b>🎯 Offres</b>',\n  '/offres · tes 10 meilleures offres',\n  '/offre_12 · fiche détaillée + actions',\n  '/chercher <i>mots</i> · recherche plein texte',\n  '/collecter · lancer une collecte maintenant',\n  '📎 Colle le <b>lien</b> ou le <b>texte</b> d\\'une offre pour l\\'importer et l\\'analyser',\n  '',\n  '<b>📨 Candidatures</b>',\n  '/lettre_12 · lettre de motivation sur mesure',\n  '/postuler_12 · marquer comme postulé (relance auto J+7)',\n  '/entretien_12 · préparer l\\'entretien avec l\\'IA',\n  '/statut 12 entretien|offre|refus|ignore',\n  '/candidatures · ton pipeline',\n  '',\n  '<b>📊 Suivi</b>',\n  '/stats · tes chiffres clés',\n  '/rapport · rapport + coaching IA maintenant',\n  '/dashboard · lien vers ton tableau de bord',\n  '',\n  '<b>⚙️ Réglages</b>',\n  '/profil · ton profil · 📄 envoie ton CV en PDF pour le mettre à jour',\n  '/seuil 75 · score minimum pour être alerté',\n  '/reanalyser · recalculer les scores récents',\n  '/recherches · /recherche_ajouter <i>mots | dépt | contrat</i> · /recherche_retirer 3',\n  '/flux · /flux_ajouter <i>url nom</i> · /flux_retirer 2',\n  '',\n  '💬 Pose-moi aussi n\\'importe quelle question sur ta recherche : je réponds en coach carrière.',\n].join('\\n');\n\nconst text = (t) => ({ route: 'text', text: t });\nconst db = (cmd, params = []) => ({ route: 'db', cmd, sql: SQL[cmd], params });\nconst needId = (id, usage) => (Number.isInteger(id) && id > 0 ? null : text(`Il me manque le numéro de l'offre. Exemple : <code>${usage}</code>`));\n\nfunction routeCallback(data) {\n  const [action, raw] = String(data || '').split(':');\n  const id = parseInt(raw, 10);\n  switch (action) {\n    case 'apply': return db('apply', [id]);\n    case 'skip': return db('status', [id, 'ignored']);\n    case 'interview': return db('status', [id, 'interview']);\n    case 'rejected': return db('status', [id, 'rejected']);\n    case 'followup': return db('followup', [id]);\n    case 'snooze': return db('snooze', [id]);\n    case 'letter': return { route: 'letter', job_id: id, text: `✍️ Je rédige ta lettre pour l'offre #${id}… (≈ 20 s)` };\n    case 'prep': return { route: 'ai', ai: 'prep', job_id: id, text: '' };\n    default: return text('Action inconnue 🤔');\n  }\n}\n\nfunction routeCommand(name, id, arg) {\n  switch (name) {\n    case 'start':\n    case 'aide':\n    case 'help': return text(HELP);\n    case 'offres': return db('offres');\n    case 'offre': return needId(id, '/offre_12') ?? db('offre', [id]);\n    case 'chercher':\n    case 'cherche': return arg ? db('chercher', [arg]) : text('Que veux-tu chercher ? Exemple : <code>/chercher react télétravail</code>');\n    case 'lettre': return needId(id, '/lettre_12') ?? { route: 'letter', job_id: id, text: `✍️ Je rédige ta lettre pour l'offre #${id}… (≈ 20 s)` };\n    case 'postuler': return needId(id, '/postuler_12') ?? db('apply', [id]);\n    case 'entretien': return needId(id, '/entretien_12') ?? { route: 'ai', ai: 'prep', job_id: id };\n    case 'statut': {\n      const word = (arg || '').split(/\\s+/).filter(Boolean).pop()?.toLowerCase();\n      const status = STATUS_FR[word];\n      if (!Number.isInteger(id) || !status) return text('Exemple : <code>/statut 12 entretien</code> (entretien, offre, refus, ignore, postulé)');\n      return status === 'applied' ? db('apply', [id]) : db('status', [id, status]);\n    }\n    case 'candidatures': return db('candidatures');\n    case 'stats': return db('stats');\n    case 'recherches': return db('recherches');\n    case 'recherche_ajouter': {\n      const [kw, dept = '', contract = ''] = (arg || '').split('|').map((s) => s.trim());\n      if (!kw) return text('Exemple : <code>/recherche_ajouter développeur react | 69 | CDI</code>');\n      return db('recherche_ajouter', [kw, dept, contract]);\n    }\n    case 'recherche_retirer': return needId(id, '/recherche_retirer 3') ?? db('recherche_retirer', [id]);\n    case 'flux': return db('flux');\n    case 'flux_ajouter': {\n      const [url, ...rest] = (arg || '').split(/\\s+/);\n      if (!/^https?:\\/\\//i.test(url || '')) return text('Exemple : <code>/flux_ajouter https://site.com/jobs.rss Mon flux</code>');\n      return db('flux_ajouter', [url, rest.join(' ')]);\n    }\n    case 'flux_retirer': return needId(id, '/flux_retirer 2') ?? db('flux_retirer', [id]);\n    case 'profil': return db('profil');\n    case 'seuil': {\n      const n = parseInt(arg, 10);\n      if (!(n >= 0 && n <= 100)) return text('Exemple : <code>/seuil 75</code> (entre 0 et 100)');\n      return db('seuil', [n]);\n    }\n    case 'reanalyser': return db('reanalyser');\n    case 'collecter': return { route: 'collect', text: '📥 Collecte lancée ! Les nouvelles pépites arriveront ici dans quelques minutes.' };\n    case 'rapport': return { route: 'report', text: '📊 Je prépare ton rapport…' };\n    case 'dashboard': {\n      const base = String($env.N8N_WEBHOOK_URL || 'http://localhost:5678/').replace(/\\/?$/, '/');\n      return text(`📈 Ton tableau de bord :\\n${base}webhook/jobhunter?token=${encodeURIComponent($env.DASHBOARD_TOKEN || '')}`);\n    }\n    default: return text(`Commande inconnue : /${esc(name)}\\n\\n${HELP}`);\n  }\n}\n\nconst out = [];\nfor (const item of $input.all()) {\n  const u = item.json;\n  const cb = u.callback_query;\n  const msg = cb ? cb.message : u.message;\n  const base = { chat_id: msg?.chat?.id, is_callback: !!cb, callback_id: cb?.id ?? null, job_id: null };\n  let r;\n\n  if (cb) {\n    r = routeCallback(cb.data);\n  } else if (msg?.document) {\n    r = msg.document.mime_type === 'application/pdf' && item.binary?.data\n      ? { route: 'cv', text: '📄 CV reçu, je l\\'analyse…' }\n      : text('📄 Envoie ton CV au format <b>PDF</b> pour mettre à jour ton profil.');\n  } else {\n    const t = (msg?.text || '').trim();\n    const cmd = t.match(/^\\/([a-zà-ÿ]+(?:_[a-zà-ÿ]+)*)(?:_(\\d+))?(?:@\\w+)?(?:\\s+([\\s\\S]+))?$/i);\n    const url = t.match(/https?:\\/\\/[^\\s<>\"]+/i)?.[0];\n    if (cmd) {\n      const arg = (cmd[3] || '').trim();\n      const id = cmd[2] ? parseInt(cmd[2], 10) : parseInt(arg, 10);\n      r = routeCommand(cmd[1].toLowerCase(), Number.isNaN(id) ? null : id, arg);\n    } else if (url) {\n      r = { route: 'import', url, text: '' };\n    } else if (t.length >= 400 && !t.trim().endsWith(\"?\")) {\n      // Long texte collé : c'est probablement une offre copiée depuis un site\n      r = { route: 'import_text', url: null, pasted: t.slice(0, 15000), text: '' };\n    } else if (t) {\n      r = { route: 'ai', ai: 'coach', question: t.slice(0, 2000) };\n    } else {\n      r = text('Je ne sais pas encore traiter ce type de message 🙂 Tape /aide.');\n    }\n  }\n  out.push({ json: { ...base, ...r }, ...(item.binary ? { binary: item.binary } : {}) });\n}\nreturn out;\n"
+      },
+      "id": "ea2e56e9-217f-507a-8068-85062b18046f",
+      "name": "Routeur",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "54b4c96f-cc5b-5625-a78e-67c11d88a65b",
+              "leftValue": "={{ $json.is_callback }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "7ec790c6-829a-5f7e-95ac-0b743a23fe64",
+      "name": "Clic sur un bouton ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "queryId": "={{ $json.callback_id }}",
+        "additionalFields": {}
+      },
+      "id": "2086ceee-d989-5743-b308-5bfeea9788da",
+      "name": "Accuser réception du clic",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        -140
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "0ea1c678-660f-5a2c-bd18-70c91f7eb16d",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "0e060bec-d249-5cc1-bc9f-409bce3f8ac6",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "db",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Base de données"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d08688fd-8fbd-5220-a274-98930d49faed",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "letter",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Lettre"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "25441f16-178e-5d19-8932-568c01b29742",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "ai",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "IA"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "1df2676c-3121-59ce-a9e9-0b0069022c8c",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "import",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Import"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "419579c4-c9f8-503a-ad4b-b4379bc107c2",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "import_text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Import texte"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d7c17c36-2564-54d2-a3d0-b88a804b7604",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "cv",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CV"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a039da5e-a4c1-5e22-a870-61dce86489c9",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "collect",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Collecte"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "3afad085-0e01-529b-a99c-9d91bf3401d7",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "report",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Rapport"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "9bc24a89-cf41-5f58-ad46-b0e01c6c54f6",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Texte"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c828ff96-8147-565a-9fad-8b135701d301",
+      "name": "Aiguillage",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        720,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {
+          "queryReplacement": "={{ $json.params }}"
+        }
+      },
+      "id": "28dc385f-6086-5e1b-bc79-0973cac1fa06",
+      "name": "Commande base de données",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1000,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst scoreEmoji = (s) => s >= 85 ? '🔥' : s >= 70 ? '✅' : s >= 50 ? '🟡' : '⚪';\nconst STATUS_LABEL = { new: '🆕 Nouvelle', shortlisted: '⭐ Sélectionnée', applied: '📨 Postulé', interview: '🎤 Entretien', offer: '🎉 Offre reçue', rejected: '❌ Refus', ignored: '🙈 Ignorée', ghosted: '👻 Sans réponse' };\n// Telegram limite un message à 4096 caractères : on coupe proprement à la fin d'une ligne\nconst fit = (text, max = 3900) => {\n  if (text.length <= max) return text;\n  const cut = text.lastIndexOf('\\n', max);\n  return text.slice(0, cut > 0 ? cut : max) + '\\n…';\n};\n\n// Met en forme le résultat SQL selon la commande\nconst ctx = $('Routeur').first().json;\n// (PostgreSQL renvoie { success: true } quand la requête ne retourne aucune ligne)\nconst rows = $input.all().map((i) => i.json).filter((r) => Object.keys(r).length && !(r.success === true && Object.keys(r).length === 1));\nconst r0 = rows[0];\nconst out = { chat_id: ctx.chat_id, job_id: null, url: null, with_actions: false };\nconst notFound = '🤷 Introuvable. Vérifie le numéro avec /offres ou /candidatures.';\nconst list = (a) => (Array.isArray(a) && a.length ? a.join(', ') : '—');\nlet t;\n\nswitch (ctx.cmd) {\n  case 'offres':\n    t = rows.length\n      ? ['🎯 <b>Tes meilleures offres du moment</b>', '', ...rows.map((j) =>\n          `${scoreEmoji(j.score)} <b>${j.score}</b> · ${esc(j.title)}\\n      🏢 ${esc(j.company || '—')} · 📍 ${esc(j.location || '—')}\\n      👉 /offre_${j.id}`)].join('\\n')\n      : '📭 Aucune offre analysée pour l\\'instant. Lance /collecter ou ajoute des recherches avec /recherche_ajouter.';\n    break;\n\n  case 'offre':\n    if (!r0) { t = notFound; break; }\n    out.job_id = r0.id; out.url = r0.url || 'https://francetravail.fr'; out.with_actions = true;\n    t = [\n      r0.score != null ? `${scoreEmoji(r0.score)} <b>${r0.score}/100 · match ${esc(r0.verdict)}</b>` : '⏳ <b>Analyse IA en attente</b>',\n      `<b>${esc(r0.title)}</b>`,\n      `🏢 ${esc(r0.company || '—')} · 📍 ${esc(r0.location || '—')}`,\n      `📄 ${esc(r0.contract_type || '—')} · 🏠 ${esc(r0.remote || '—')} · 🎓 ${esc(r0.seniority || '—')}`,\n      `💶 ${esc(r0.salary || (r0.estimated_salary ? r0.estimated_salary + ' (estimé)' : '—'))}`,\n      `📌 Statut : ${STATUS_LABEL[r0.status] || r0.status}${r0.applied_at ? ' · postulé le ' + new Date(r0.applied_at).toLocaleDateString('fr-FR') : ''}${r0.letters ? ' · ✍️ ' + r0.letters + ' lettre(s)' : ''}`,\n      ...(r0.summary ? ['', `📝 ${esc(r0.summary)}`] : []),\n      ...(r0.strengths?.length ? ['', '<b>✅ Points forts</b>', ...r0.strengths.map((s) => `• ${esc(s)}`)] : []),\n      ...(r0.gaps?.length ? ['', '<b>⚠️ Écarts</b>', ...r0.gaps.map((s) => `• ${esc(s)}`)] : []),\n      ...(r0.key_skills?.length ? ['', `🛠️ <b>Compétences clés :</b> ${esc(list(r0.key_skills))}`] : []),\n      ...(r0.missing_skills?.length ? [`🧩 <b>À renforcer :</b> ${esc(list(r0.missing_skills))}`] : []),\n      ...(r0.red_flags?.length ? ['', '<b>🚩 Signaux d\\'alerte</b>', ...r0.red_flags.map((s) => `• ${esc(s)}`)] : []),\n      '', '<b>Extrait de l\\'offre</b>', esc((r0.description || '').slice(0, 700)) + ((r0.description || '').length > 700 ? '…' : ''),\n    ].join('\\n');\n    break;\n\n  case 'chercher':\n    t = rows.length\n      ? [`🔎 <b>${rows.length} résultat(s)</b>`, '', ...rows.map((j) =>\n          `${j.score != null ? scoreEmoji(j.score) + ' ' + j.score : '⏳'} · ${esc(j.title)} · ${esc(j.company || '—')} ${STATUS_LABEL[j.status]?.split(' ')[0] || ''}\\n      👉 /offre_${j.id}`)].join('\\n')\n      : '🔎 Aucun résultat. Essaie d\\'autres mots-clés.';\n    break;\n\n  case 'apply':\n    t = r0\n      ? `📨 <b>Candidature enregistrée !</b>\\n${esc(r0.title)}${r0.company ? ' · ' + esc(r0.company) : ''}\\n\\n⏰ Je te proposerai une relance le <b>${r0.followup_date}</b> si tu n'as pas de nouvelles.\\n🎤 Prépare-toi dès maintenant : /entretien_${r0.id}`\n      : notFound;\n    break;\n\n  case 'status':\n    if (!r0) { t = notFound; break; }\n    t = {\n      interview: `🎤 <b>Bravo pour l'entretien !</b> (${esc(r0.title)})\\nJe te prépare les questions probables : /entretien_${r0.id}`,\n      offer: `🎉🎉 <b>Félicitations pour l'offre !</b> (${esc(r0.title)})\\nTu l'as bien mérité.`,\n      rejected: `💪 Refus noté pour « ${esc(r0.title)} ». Chaque refus te rapproche du bon poste. Tes prochaines pistes : /offres`,\n      ignored: `🙈 Offre « ${esc(r0.title)} » ignorée. Je ne te la proposerai plus.`,\n    }[r0.status] ?? `📌 Statut mis à jour : ${STATUS_LABEL[r0.status]} · ${esc(r0.title)}`;\n    break;\n\n  case 'followup':\n    t = r0 ? `✅ Relance n°${r0.followup_count} notée pour « ${esc(r0.title)} ». Prochain point le ${r0.next_date}.` : notFound;\n    break;\n\n  case 'snooze':\n    t = r0 ? `⏳ OK, je te reparle de « ${esc(r0.title)} » le ${r0.next_date}.` : notFound;\n    break;\n\n  case 'candidatures': {\n    if (!rows.length) { t = '📭 Aucune candidature en cours. Marque une offre avec ✅ « J\\'ai postulé ».'; break; }\n    const groups = ['offer', 'interview', 'applied'];\n    t = ['📋 <b>Ton pipeline de candidatures</b>'];\n    for (const g of groups) {\n      const gr = rows.filter((r) => r.status === g);\n      if (!gr.length) continue;\n      t.push('', `<b>${STATUS_LABEL[g]} (${gr.length})</b>`);\n      t.push(...gr.map((r) => `• ${esc(r.title)} · ${esc(r.company || '—')} · J+${r.days}${r.followup_count ? ' · ' + r.followup_count + ' relance(s)' : ''} → /offre_${r.id}`));\n    }\n    t = t.join('\\n');\n    break;\n  }\n\n  case 'stats': {\n    const s = r0;\n    const rate = s.applications ? Math.round((s.answered / s.applications) * 100) : 0;\n    t = [\n      '📊 <b>Tes chiffres</b>',\n      '',\n      `📥 ${s.total} offres collectées (${s.week_collected} cette semaine)`,\n      `🤖 ${s.scored} analysées · score moyen ${s.avg_score ?? '—'}`,\n      `📨 ${s.applications} candidatures (${s.week_applied} cette semaine)`,\n      `🎤 ${s.interviews} entretiens · 🎉 ${s.offers} offres`,\n      `❌ ${s.rejected} refus · 👻 ${s.ghosted} sans réponse`,\n      `📈 Taux de réponse : <b>${rate}%</b>`,\n      ...(s.missing_skills?.length ? ['', '🧩 <b>Compétences à renforcer</b> : ' + s.missing_skills.map((m) => `${esc(m.skill)} (${m.occurrences})`).join(', ')] : []),\n    ].join('\\n');\n    break;\n  }\n\n  case 'recherches':\n    t = ['🔍 <b>Tes recherches France Travail</b>', '', ...rows.map((s) =>\n      `${s.active ? '🟢' : '⚪'} <b>#${s.id}</b> ${esc(s.keywords)}${s.department ? ' · dépt ' + esc(s.department) : ''}${s.contract_type ? ' · ' + esc(s.contract_type) : ''}${s.last_run ? `\\n      dernière collecte ${s.last_run} · ${s.last_count ?? 0} offres` : ''}`),\n      '', 'Ajouter : <code>/recherche_ajouter mots | dépt | contrat</code>'].join('\\n');\n    break;\n\n  case 'recherche_ajouter':\n    t = r0 ? `✅ Recherche #${r0.id} ajoutée : <b>${esc(r0.keywords)}</b>. Lance /collecter pour la tester tout de suite.` : '⚠️ Impossible d\\'ajouter la recherche.';\n    break;\n\n  case 'recherche_retirer':\n  case 'flux_retirer':\n    t = r0 ? `🗑️ « ${esc(r0.label || r0.name)} » désactivé(e).` : notFound;\n    break;\n\n  case 'flux':\n    t = ['📡 <b>Tes flux RSS</b>', '', ...rows.map((f) =>\n      `${f.active ? (f.error_count ? '🟠' : '🟢') : '⚪'} <b>#${f.id}</b> ${esc(f.name)} · ${f.last_count ?? 0} offres${f.error_count ? `\\n      ⚠️ ${f.error_count} erreur(s) : ${esc((f.last_error || '').slice(0, 80))}` : ''}`)].join('\\n');\n    break;\n\n  case 'flux_ajouter':\n    t = r0 ? `✅ Flux #${r0.id} « ${esc(r0.name)} » ajouté.` : '⚠️ Impossible d\\'ajouter le flux.';\n    break;\n\n  case 'profil': {\n    const p = r0 || {};\n    t = [\n      '👤 <b>Ton profil</b>',\n      '',\n      `<b>${esc(p.full_name || '—')}</b> · ${esc(p.headline || '')}`,\n      `🎯 Postes : ${esc(list(p.target_roles))}`,\n      `🛠️ Compétences : ${esc(list(p.skills))}`,\n      `⏳ Expérience : ${p.years_experience ?? '—'} an(s)`,\n      `📍 Lieux : ${esc(list(p.locations))} · 🏠 ${esc(p.remote_preference)}`,\n      `📄 Contrats : ${esc(list(p.contract_types))}`,\n      `🗣️ Langues : ${esc(list(p.languages))}`,\n      `🔔 Seuil d'alerte : ${p.alert_threshold}/100`,\n      `📎 CV : ${p.cv_text ? '✅ chargé (' + p.cv_text.length + ' caractères)' : '❌ non chargé · envoie-le en PDF ici'}`,\n    ].join('\\n');\n    break;\n  }\n\n  case 'seuil':\n    t = `🔔 Seuil d'alerte réglé à <b>${r0?.alert_threshold}</b>/100.`;\n    break;\n\n  case 'reanalyser':\n    t = `🔄 ${r0?.n ?? 0} offre(s) seront réanalysées avec ton profil actuel dans les 30 prochaines minutes.`;\n    break;\n\n  default:\n    t = '✅ Fait.';\n}\n\nreturn [{ json: { ...out, text: fit(t) } }];\n"
+      },
+      "id": "e5a30ee4-4ed8-51fc-83e3-da57bd65a553",
+      "name": "Formater la réponse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4a020e0b-6542-5657-9c9a-4ac0e4aaa9c0",
+              "leftValue": "={{ $json.with_actions }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "48c59168-7f44-5a84-a761-a1a72e735d88",
+      "name": "Fiche offre ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        },
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✍️ Lettre",
+                    "additionalFields": {
+                      "callback_data": "=letter:{{ $json.job_id }}"
+                    }
+                  },
+                  {
+                    "text": "🎤 Entretien",
+                    "additionalFields": {
+                      "callback_data": "=prep:{{ $json.job_id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ J'ai postulé",
+                    "additionalFields": {
+                      "callback_data": "=apply:{{ $json.job_id }}"
+                    }
+                  },
+                  {
+                    "text": "🙈 Ignorer",
+                    "additionalFields": {
+                      "callback_data": "=skip:{{ $json.job_id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🔗 Voir l'offre",
+                    "additionalFields": {
+                      "url": "={{ $json.url }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "5ee29a51-1814-5165-83b4-d765be765b33",
+      "name": "Répondre (fiche offre)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1740,
+        -100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "4773c891-c052-5bfd-a524-d2a59b9650f9"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "63c0a16f-616a-5717-b77e-281988da2e08",
+      "name": "Répondre",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1740,
+        200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "ef64547d-baa1-5e5c-b796-465e8b35923c"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "JH04Lettre000001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "8c19d7e8-f0e2-5957-a29d-809780af4d52",
+      "name": "Générer la lettre",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "JH01Collecte0001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "51303788-e495-5a06-8f87-f7fac87b6497",
+      "name": "Lancer la collecte",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "JH06RapportHebdo",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "cb418562-5183-56bc-9459-d7919f5370cf",
+      "name": "Lancer le rapport",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT row_to_json(p) AS profile,\n  (SELECT row_to_json(j) FROM (\n     SELECT id, title, company, location, contract_type, description, summary,\n            key_skills, strengths, gaps, missing_skills\n     FROM jobs WHERE id = $1::int) j) AS job,\n  (SELECT coalesce(json_object_agg(status, total), '{}') FROM v_pipeline) AS pipeline,\n  (SELECT coalesce(json_agg(t), '[]') FROM (\n     SELECT id, title, company, score, status FROM jobs\n     WHERE score IS NOT NULL AND status <> 'ignored'\n     ORDER BY collected_at DESC, score DESC LIMIT 15) t) AS recent_jobs,\n  (SELECT coalesce(json_agg(skill), '[]') FROM (SELECT skill FROM v_missing_skills LIMIT 8) t) AS missing_skills\nFROM profile p WHERE p.id = 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id ?? null ] }}"
+        }
+      },
+      "id": "c68d679e-ed7f-52de-96a4-6ededd1f571a",
+      "name": "Contexte pour l'IA",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1000,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Routeur').first().json;\nconst c = $json;\nconst p = c.profile || {};\nconst list = (a) => (Array.isArray(a) && a.length ? a.join(', ') : 'non précisé');\nconst profile = `Profil : ${p.full_name || ''} · ${p.headline || ''}\\nPostes visés : ${list(p.target_roles)}\\nCompétences : ${list(p.skills)}\\nExpérience : ${p.years_experience ?? '?'} ans\\nCV :\\n${(p.cv_text || 'non fourni').slice(0, 5000)}`;\n\nif (ctx.ai === 'prep') {\n  if (!c.job) return [{ json: { chat_id: ctx.chat_id, skip: true, text: `🤷 Offre #${ctx.job_id} introuvable. Vérifie avec /offres.` } }];\n  const j = c.job;\n  return [{ json: {\n    chat_id: ctx.chat_id, ai: 'prep', job_id: j.id, job_title: j.title, company: j.company,\n    llm_body: {\n      temperature: 0.5,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: \"Tu es un recruteur tech et coach d'entretien. Prépare le candidat à un entretien pour l'offre donnée, en t'appuyant sur son profil.\\nRéponds UNIQUEMENT avec un objet JSON valide en français :\\n{\\n  \\\"pitch\\\": \\\"Pitch de présentation de 45 secondes à la 1re personne, adapté au poste\\\",\\n  \\\"questions\\\": [{\\\"q\\\": \\\"Question probable\\\", \\\"tip\\\": \\\"Comment y répondre avec SES expériences (1-2 phrases)\\\"}],\\n  \\\"technical\\\": [\\\"Sujets techniques à réviser en priorité\\\"],\\n  \\\"ask_them\\\": [\\\"Questions pertinentes à poser au recruteur\\\"],\\n  \\\"traps\\\": [\\\"Pièges à éviter\\\"]\\n}\\nDonne 6 questions (mélange motivation, comportemental et technique), 4 sujets techniques, 3 questions à poser, 3 pièges.\" },\n        { role: 'user', content: `${profile}\\n\\nOFFRE #${j.id} : ${j.title} chez ${j.company || '?'} (${j.location || ''}, ${j.contract_type || ''})\\nCompétences clés : ${list(j.key_skills)}\\nPoints forts : ${list(j.strengths)}\\nÉcarts : ${list(j.gaps)}\\nDescription :\\n${(j.description || '').slice(0, 5000)}` },\n      ],\n    },\n  } }];\n}\n\n// Coach : question libre\nreturn [{ json: {\n  chat_id: ctx.chat_id, ai: 'coach',\n  llm_body: {\n    temperature: 0.7,\n    messages: [\n      { role: 'system', content: \"Tu es « Job Hunter IA », coach carrière tech francophone intégré à un bot Telegram.\\nTu réponds aux questions du candidat sur sa recherche d'emploi, en t'appuyant sur son profil, son pipeline de candidatures et les offres récentes fournies en contexte.\\nStyle : chaleureux, concret, actionnable, 150 mots maximum, texte brut (pas de Markdown, pas d'astérisques), quelques emojis sobres.\\nQuand c'est pertinent, cite les offres par leur commande, par exemple /offre_12.\" },\n      { role: 'user', content: `${profile}\\n\\nPipeline (nombre d'offres par statut) : ${JSON.stringify(c.pipeline)}\\nCompétences manquantes fréquentes : ${list(c.missing_skills)}\\nOffres récentes : ${JSON.stringify(c.recent_jobs)}\\n\\nQUESTION : ${ctx.question}` },\n    ],\n  },\n} }];\n"
+      },
+      "id": "0197256e-ee8f-5970-98a8-338bf30d0d45",
+      "name": "Préparer la demande IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "83ff3c5e-3217-54c5-9072-615e0483f2cc",
+              "leftValue": "={{ !$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "60ffd4cd-c718-5dca-95ae-07226b318676",
+      "name": "Appel IA nécessaire ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LLM_BASE_URL || \"https://api.openai.com/v1\").replace(/\\/$/, \"\") }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || \"gpt-4o-mini\", ...$json.llm_body }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "15705bca-4d33-5e2b-bfc8-2550a411e123",
+      "name": "Réponse IA (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1740,
+        380
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jhLlmApiCred0001",
+          "name": "Job Hunter · API IA (LLM)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst parseLLM = (resp) => {\n  if (resp?.error) throw new Error(resp.error.message || JSON.stringify(resp.error).slice(0, 300));\n  const content = resp?.choices?.[0]?.message?.content;\n  if (!content) throw new Error('Réponse vide du modèle IA');\n  const clean = content.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```$/, '').trim();\n  return JSON.parse(clean);\n};\n// Telegram limite un message à 4096 caractères : on coupe proprement à la fin d'une ligne\nconst fit = (text, max = 3900) => {\n  if (text.length <= max) return text;\n  const cut = text.lastIndexOf('\\n', max);\n  return text.slice(0, cut > 0 ? cut : max) + '\\n…';\n};\n\nconst req = $('Préparer la demande IA').first().json;\nconst out = { chat_id: req.chat_id, job_id: req.job_id ?? null, kind: null, content: null };\n\nif (req.ai === 'coach') {\n  const answer = $json.choices?.[0]?.message?.content?.trim();\n  return [{ json: { ...out, text: fit(answer ? esc(answer) : `⚠️ Le coach IA est indisponible pour le moment (${esc($json.error?.message || 'réponse vide')}).`) } }];\n}\n\nlet r;\ntry { r = parseLLM($json); } catch (e) {\n  return [{ json: { ...out, text: `⚠️ Préparation d'entretien impossible (${esc(e.message)}). Réessaie avec /entretien_${req.job_id}.` } }];\n}\nconst lines = [\n  `🎤 <b>Préparation d'entretien</b>`,\n  `<b>${esc(req.job_title)}</b>${req.company ? ' · ' + esc(req.company) : ''}`,\n  '', '🗣️ <b>Ton pitch (45 s)</b>', esc(r.pitch || ''),\n  '', '❓ <b>Questions probables</b>',\n  ...(r.questions || []).slice(0, 6).map((q, i) => `${i + 1}. <b>${esc(q.q)}</b>\\n   💡 ${esc(q.tip)}`),\n  '', '🛠️ <b>À réviser</b>', ...(r.technical || []).map((x) => `• ${esc(x)}`),\n  '', '🙋 <b>Questions à leur poser</b>', ...(r.ask_them || []).map((x) => `• ${esc(x)}`),\n  '', '🚫 <b>Pièges à éviter</b>', ...(r.traps || []).map((x) => `• ${esc(x)}`),\n];\nconst text = fit(lines.join('\\n'));\nreturn [{ json: { ...out, text, kind: 'interview_prep', content: text.replace(/<[^>]+>/g, '') } }];\n"
+      },
+      "id": "79c9fa2a-2981-5825-a4ee-a4b3bb7056ed",
+      "name": "Formater la réponse IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO documents (job_id, kind, content)\nSELECT $1::int, $2, $3 WHERE $2 IS NOT NULL\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id, $json.kind, $json.content ] }}"
+        }
+      },
+      "id": "b6f82707-2c55-5db5-bbf3-f5fd2d294e61",
+      "name": "Archiver la préparation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2220,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "fr-FR,fr;q=0.9,en;q=0.8"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000,
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "html"
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 5
+            }
+          }
+        }
+      },
+      "id": "1772cd11-84b6-5059-b8fa-0872b4351027",
+      "name": "Télécharger la page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        480
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\n// Nettoie le HTML ; si la page contient des données structurées schema.org/JobPosting, on les exploite\nconst ctx = $('Routeur').first().json;\nif (ctx.pasted) {\n  // Offre copiée-collée directement dans Telegram\n  return [{ json: {\n    chat_id: ctx.chat_id,\n    url: null,\n    llm_body: {\n      temperature: 0,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: \"Tu extrais les informations d'une offre d'emploi à partir du contenu d'une page web.\\nRéponds UNIQUEMENT avec un objet JSON valide :\\n{\\n  \\\"is_job_offer\\\": true,\\n  \\\"title\\\": \\\"Intitulé du poste\\\",\\n  \\\"company\\\": \\\"Entreprise ou null\\\",\\n  \\\"location\\\": \\\"Ville / pays / Remote ou null\\\",\\n  \\\"contract_type\\\": \\\"CDI, CDD, Freelance, Stage, Alternance... ou null\\\",\\n  \\\"salary\\\": \\\"Salaire indiqué ou null\\\",\\n  \\\"published_at\\\": \\\"Date ISO 8601 si présente, sinon null\\\",\\n  \\\"description\\\": \\\"Description complète et fidèle du poste (missions, profil, stack, avantages), 4000 caractères max\\\"\\n}\\nSi la page n'est pas une offre d'emploi, renvoie {\\\"is_job_offer\\\": false}.\" },\n        { role: 'user', content: `TEXTE DE L'OFFRE (copié-collé) :\\n${ctx.pasted}` },\n      ],\n    },\n  } }];\n}\nconst html = typeof $json.html === 'string' ? $json.html : '';\nif (!html || $json.error) {\n  return [{ json: { chat_id: ctx.chat_id, skip: true, text: `⚠️ Je n'ai pas pu ouvrir cette page (${esc($json.error?.message || 'page vide')}). Certains sites bloquent les robots : copie-colle plutôt le texte de l'offre ici.` } }];\n}\n\nlet jsonLd = '';\nfor (const m of html.matchAll(/<script[^>]*application\\/ld\\+json[^>]*>([\\s\\S]*?)<\\/script>/gi)) {\n  if (/JobPosting/i.test(m[1])) { jsonLd = m[1].trim().slice(0, 8000); break; }\n}\nconst decode = (s) => s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, \"'\").replace(/&quot;/g, '\"');\nconst text = decode(html\n  .replace(/<(script|style|noscript|svg|nav|footer|header)[\\s\\S]*?<\\/\\1>/gi, ' ')\n  .replace(/<br\\s*\\/?>|<\\/(p|div|li|h\\d)>/gi, '\\n')\n  .replace(/<[^>]+>/g, ' '))\n  .replace(/[ \\t]+/g, ' ').replace(/\\n\\s*\\n+/g, '\\n').trim().slice(0, 12000);\n\nif (!jsonLd && text.length < 200) {\n  return [{ json: { chat_id: ctx.chat_id, skip: true, text: '⚠️ La page semble vide (site chargé en JavaScript ?). Copie-colle le texte de l\\'offre ici et je l\\'analyserai.' } }];\n}\n\nreturn [{ json: {\n  chat_id: ctx.chat_id,\n  url: ctx.url,\n  llm_body: {\n    temperature: 0,\n    response_format: { type: 'json_object' },\n    messages: [\n      { role: 'system', content: \"Tu extrais les informations d'une offre d'emploi à partir du contenu d'une page web.\\nRéponds UNIQUEMENT avec un objet JSON valide :\\n{\\n  \\\"is_job_offer\\\": true,\\n  \\\"title\\\": \\\"Intitulé du poste\\\",\\n  \\\"company\\\": \\\"Entreprise ou null\\\",\\n  \\\"location\\\": \\\"Ville / pays / Remote ou null\\\",\\n  \\\"contract_type\\\": \\\"CDI, CDD, Freelance, Stage, Alternance... ou null\\\",\\n  \\\"salary\\\": \\\"Salaire indiqué ou null\\\",\\n  \\\"published_at\\\": \\\"Date ISO 8601 si présente, sinon null\\\",\\n  \\\"description\\\": \\\"Description complète et fidèle du poste (missions, profil, stack, avantages), 4000 caractères max\\\"\\n}\\nSi la page n'est pas une offre d'emploi, renvoie {\\\"is_job_offer\\\": false}.\" },\n      { role: 'user', content: `URL : ${ctx.url}\\n\\n${jsonLd ? 'DONNÉES STRUCTURÉES (JSON-LD) :\\n' + jsonLd + '\\n\\n' : ''}TEXTE DE LA PAGE :\\n${text}` },\n    ],\n  },\n} }];\n"
+      },
+      "id": "27687d8d-3f06-5b99-b5f9-26f4b21f2e80",
+      "name": "Extraire le contenu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "913d7bdb-736f-5a41-b922-3b3cbf2e4d78",
+              "leftValue": "={{ !$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "f213ada8-9686-55b5-bc16-6b892f10c4ec",
+      "name": "Page exploitable ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LLM_BASE_URL || \"https://api.openai.com/v1\").replace(/\\/$/, \"\") }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || \"gpt-4o-mini\", ...$json.llm_body }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "a0864cdf-6d13-5fd6-bb16-cb929c4fc1c4",
+      "name": "Extraction IA de l'offre",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1740,
+        560
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jhLlmApiCred0001",
+          "name": "Job Hunter · API IA (LLM)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst parseLLM = (resp) => {\n  if (resp?.error) throw new Error(resp.error.message || JSON.stringify(resp.error).slice(0, 300));\n  const content = resp?.choices?.[0]?.message?.content;\n  if (!content) throw new Error('Réponse vide du modèle IA');\n  const clean = content.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```$/, '').trim();\n  return JSON.parse(clean);\n};\n\nconst req = $('Extraire le contenu').first().json;\nlet r;\ntry { r = parseLLM($json); } catch (e) {\n  return [{ json: { chat_id: req.chat_id, ok: false, text: `⚠️ Extraction impossible (${esc(e.message)}).` } }];\n}\nif (!r.is_job_offer || !r.title) {\n  return [{ json: { chat_id: req.chat_id, ok: false, text: '🤔 Cette page ne ressemble pas à une offre d\\'emploi.' } }];\n}\nconst date = r.published_at && !Number.isNaN(Date.parse(r.published_at)) ? new Date(r.published_at).toISOString() : null;\n// Une offre collée n'a pas d'URL : on l'identifie par une empreinte de son contenu\nconst fingerprint = 'texte:' + [...`${r.title}|${r.company}|${(r.description || '').slice(0, 300)}`].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7).toString(36);\nreturn [{ json: { chat_id: req.chat_id, ok: true, job: {\n  source: 'manuel', external_id: req.url || fingerprint, url: req.url,\n  title: String(r.title).slice(0, 300), company: r.company || null, location: r.location || null,\n  contract_type: r.contract_type || null, salary: r.salary || null,\n  description: String(r.description || '').slice(0, 8000), published_at: date,\n} } }];\n"
+      },
+      "id": "4800879e-9769-5abf-8581-5c9f2e64dbbd",
+      "name": "Valider l'offre importée",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "84aad480-0fc2-572e-8771-9233790fa0ab",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "b04c6d8c-ff54-55ac-afe1-ac767379cb66",
+      "name": "Offre valide ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2220,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO jobs (source, external_id, url, title, company, location, contract_type, salary, description, published_at)\nSELECT source, external_id, url, title, company, location, contract_type, salary, description, published_at\nFROM jsonb_populate_record(NULL::jobs, $1::jsonb)\nON CONFLICT (source, external_id) DO UPDATE SET\n  title = EXCLUDED.title, company = EXCLUDED.company, location = EXCLUDED.location,\n  contract_type = EXCLUDED.contract_type, salary = EXCLUDED.salary, description = EXCLUDED.description\nRETURNING id, title, company, (xmax = 0) AS created;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.job) ] }}"
+        }
+      },
+      "id": "2490e566-918c-5dad-a779-f5bc8c66e145",
+      "name": "Enregistrer l'offre importée",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2480,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst j = $json;\nreturn [{ json: {\n  chat_id: $('Routeur').first().json.chat_id,\n  job_id: j.id,\n  text: `📥 <b>Offre ${j.created ? 'importée' : 'mise à jour'}</b> (#${j.id})\\n${esc(j.title)}${j.company ? ' · ' + esc(j.company) : ''}\\n\\n🤖 Analyse IA en cours, je t'envoie le résultat dans quelques secondes…`,\n} }];\n"
+      },
+      "id": "238cfa7e-fb77-503b-8197-abef6fc3779a",
+      "name": "Confirmer l'import",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2720,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "JH02AnalyseIA001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "779d8e8f-be4c-545c-a9eb-93815bf7e0b5",
+      "name": "Analyser l'offre importée",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2960,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "data",
+        "options": {
+          "maxPages": 6
+        }
+      },
+      "id": "88ade26e-0c65-521a-b080-cbff80a20524",
+      "name": "Lire le CV (PDF)",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        1000,
+        960
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst ctx = $('Routeur').first().json;\nconst text = String($json.text || '').replace(/\\s+\\n/g, '\\n').trim();\nif ($json.error || text.length < 100) {\n  return [{ json: { chat_id: ctx.chat_id, skip: true, text: '⚠️ Je n\\'arrive pas à lire ce PDF (scan ou image ?). Essaie avec un PDF exporté depuis Word / Google Docs.' } }];\n}\nreturn [{ json: {\n  chat_id: ctx.chat_id,\n  cv_text: text.slice(0, 15000),\n  llm_body: {\n    temperature: 0,\n    response_format: { type: 'json_object' },\n    messages: [\n      { role: 'system', content: \"Tu analyses un CV et en extrais un profil structuré pour un outil de recherche d'emploi.\\nRéponds UNIQUEMENT avec un objet JSON valide en français :\\n{\\n  \\\"full_name\\\": \\\"Prénom Nom\\\",\\n  \\\"headline\\\": \\\"Titre professionnel court (ex. Développeur full-stack junior)\\\",\\n  \\\"target_roles\\\": [\\\"3 à 5 intitulés de postes adaptés au profil\\\"],\\n  \\\"skills\\\": [\\\"Compétences techniques et outils, noms courts (20 max)\\\"],\\n  \\\"languages\\\": [\\\"Langues parlées avec niveau si présent\\\"],\\n  \\\"years_experience\\\": 0,\\n  \\\"locations\\\": [\\\"Ville(s) mentionnée(s) dans le CV\\\"],\\n  \\\"strengths\\\": [\\\"3 atouts majeurs du profil\\\"]\\n}\" },\n      { role: 'user', content: text.slice(0, 12000) },\n    ],\n  },\n} }];\n"
+      },
+      "id": "d3226473-a3c8-5118-9b14-481e75c18c12",
+      "name": "Préparer l'analyse du CV",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "65b78d51-e18f-553d-868b-0c451ad0cf64",
+              "leftValue": "={{ !$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "033dd28b-671f-5207-a31b-30c3a67f7512",
+      "name": "CV lisible ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LLM_BASE_URL || \"https://api.openai.com/v1\").replace(/\\/$/, \"\") }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || \"gpt-4o-mini\", ...$json.llm_body }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "b0127bd2-97c7-545c-879e-bd084bbe1caf",
+      "name": "Analyse IA du CV",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1740,
+        900
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jhLlmApiCred0001",
+          "name": "Job Hunter · API IA (LLM)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const parseLLM = (resp) => {\n  if (resp?.error) throw new Error(resp.error.message || JSON.stringify(resp.error).slice(0, 300));\n  const content = resp?.choices?.[0]?.message?.content;\n  if (!content) throw new Error('Réponse vide du modèle IA');\n  const clean = content.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```$/, '').trim();\n  return JSON.parse(clean);\n};\n\nconst req = $('Préparer l\\'analyse du CV').first().json;\nlet r = {};\ntry { r = parseLLM($json); } catch (e) { r = {}; }\nconst arr = (a, n) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim().slice(0, 80)).slice(0, n) : []);\nconst years = Number.isFinite(Number(r.years_experience)) ? Math.max(0, Math.min(50, Math.round(Number(r.years_experience)))) : null;\nreturn [{ json: {\n  profile: {\n    full_name: r.full_name || null,\n    headline: r.headline || null,\n    cv_text: req.cv_text,\n    target_roles: arr(r.target_roles, 6),\n    skills: arr(r.skills, 25),\n    languages: arr(r.languages, 6),\n    locations: arr(r.locations, 5),\n    years_experience: years,\n  },\n  strengths: arr(r.strengths, 3),\n} }];\n"
+      },
+      "id": "2975a6b0-d118-5d0e-828e-4af1cc61ba79",
+      "name": "Valider le profil",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH d AS (\n  SELECT * FROM jsonb_to_record($1::jsonb) AS x(\n    full_name text, headline text, cv_text text, target_roles text[], skills text[],\n    languages text[], locations text[], years_experience int)\n)\nUPDATE profile p SET\n  full_name        = COALESCE(d.full_name, p.full_name),\n  headline         = COALESCE(d.headline, p.headline),\n  cv_text          = d.cv_text,\n  target_roles     = CASE WHEN cardinality(d.target_roles) > 0 THEN d.target_roles ELSE p.target_roles END,\n  skills           = CASE WHEN cardinality(d.skills) > 0 THEN d.skills ELSE p.skills END,\n  languages        = CASE WHEN cardinality(d.languages) > 0 THEN d.languages ELSE p.languages END,\n  locations        = CASE WHEN cardinality(p.locations) > 0 THEN p.locations ELSE d.locations END,\n  years_experience = COALESCE(d.years_experience, p.years_experience),\n  updated_at       = now()\nFROM d\nWHERE p.id = 1\nRETURNING p.full_name, p.headline, p.target_roles, p.skills, p.years_experience;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.profile) ] }}"
+        }
+      },
+      "id": "2717d04f-5c80-584e-a4a1-3c9c183b0279",
+      "name": "Mettre à jour le profil",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2220,
+        900
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst p = $json;\nconst strengths = $('Valider le profil').first().json.strengths;\nreturn [{ json: {\n  chat_id: $('Routeur').first().json.chat_id,\n  text: [\n    '✅ <b>Profil mis à jour à partir de ton CV</b>',\n    '',\n    `👤 ${esc(p.full_name || '—')} · ${esc(p.headline || '')}`,\n    `🎯 Postes : ${esc((p.target_roles || []).join(', '))}`,\n    `🛠️ ${(p.skills || []).length} compétences détectées : ${esc((p.skills || []).slice(0, 12).join(', '))}${(p.skills || []).length > 12 ? '…' : ''}`,\n    `⏳ Expérience : ${p.years_experience ?? '—'} an(s)`,\n    ...(strengths.length ? ['', '💪 <b>Tes atouts</b>', ...strengths.map((s) => `• ${esc(s)}`)] : []),\n    '', '👉 Tape /reanalyser pour recalculer les scores des offres récentes avec ce profil.',\n  ].join('\\n'),\n} }];\n"
+      },
+      "id": "bd4c56b7-74ef-5d50-9447-949b1812209c",
+      "name": "Confirmer le profil",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        900
+      ]
+    }
+  ],
+  "connections": {
+    "Message Telegram": {
+      "main": [
+        [
+          {
+            "node": "Utilisateur autorisé ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Utilisateur autorisé ?": {
+      "main": [
+        [
+          {
+            "node": "Routeur",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Bot privé",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Routeur": {
+      "main": [
+        [
+          {
+            "node": "Clic sur un bouton ?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Aiguillage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clic sur un bouton ?": {
+      "main": [
+        [
+          {
+            "node": "Accuser réception du clic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aiguillage": {
+      "main": [
+        [
+          {
+            "node": "Commande base de données",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Générer la lettre",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Contexte pour l'IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Télécharger la page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extraire le contenu",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lire le CV (PDF)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lancer la collecte",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lancer le rapport",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commande base de données": {
+      "main": [
+        [
+          {
+            "node": "Formater la réponse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formater la réponse": {
+      "main": [
+        [
+          {
+            "node": "Fiche offre ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fiche offre ?": {
+      "main": [
+        [
+          {
+            "node": "Répondre (fiche offre)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contexte pour l'IA": {
+      "main": [
+        [
+          {
+            "node": "Préparer la demande IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer la demande IA": {
+      "main": [
+        [
+          {
+            "node": "Appel IA nécessaire ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Appel IA nécessaire ?": {
+      "main": [
+        [
+          {
+            "node": "Réponse IA (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Réponse IA (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Formater la réponse IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formater la réponse IA": {
+      "main": [
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Archiver la préparation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Télécharger la page": {
+      "main": [
+        [
+          {
+            "node": "Extraire le contenu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraire le contenu": {
+      "main": [
+        [
+          {
+            "node": "Page exploitable ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page exploitable ?": {
+      "main": [
+        [
+          {
+            "node": "Extraction IA de l'offre",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraction IA de l'offre": {
+      "main": [
+        [
+          {
+            "node": "Valider l'offre importée",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valider l'offre importée": {
+      "main": [
+        [
+          {
+            "node": "Offre valide ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Offre valide ?": {
+      "main": [
+        [
+          {
+            "node": "Enregistrer l'offre importée",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enregistrer l'offre importée": {
+      "main": [
+        [
+          {
+            "node": "Confirmer l'import",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmer l'import": {
+      "main": [
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Analyser l'offre importée",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lire le CV (PDF)": {
+      "main": [
+        [
+          {
+            "node": "Préparer l'analyse du CV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer l'analyse du CV": {
+      "main": [
+        [
+          {
+            "node": "CV lisible ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CV lisible ?": {
+      "main": [
+        [
+          {
+            "node": "Analyse IA du CV",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse IA du CV": {
+      "main": [
+        [
+          {
+            "node": "Valider le profil",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valider le profil": {
+      "main": [
+        [
+          {
+            "node": "Mettre à jour le profil",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mettre à jour le profil": {
+      "main": [
+        [
+          {
+            "node": "Confirmer le profil",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmer le profil": {
+      "main": [
+        [
+          {
+            "node": "Répondre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true,
+    "errorWorkflow": "JH08Erreurs00001"
+  },
+  "pinData": {},
+  "active": true,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

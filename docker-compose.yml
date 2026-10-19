@@ -1,0 +1,90 @@
+# =====================================================================
+#  Job Hunter IA · stack Docker
+#  - postgres : données métier (offres, candidatures...) + base interne de n8n
+#  - n8n      : moteur d'automatisation (8 workflows)
+#  - ngrok    : (optionnel) URL HTTPS publique pour le bot Telegram
+# =====================================================================
+x-n8n-env: &n8n-env
+  # Base de données interne de n8n
+  DB_TYPE: postgresdb
+  DB_POSTGRESDB_HOST: postgres
+  DB_POSTGRESDB_DATABASE: n8n
+  DB_POSTGRESDB_USER: ${POSTGRES_USER}
+  DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+  # Général
+  N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+  GENERIC_TIMEZONE: ${TIMEZONE:-Europe/Paris}
+  TZ: ${TIMEZONE:-Europe/Paris}
+  N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+  N8N_SECURE_COOKIE: "false"
+  N8N_RUNNERS_ENABLED: "true"
+  N8N_DIAGNOSTICS_ENABLED: "false"
+  N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"   # les workflows lisent leur configuration via $env
+  EXECUTIONS_DATA_PRUNE: "true"
+  EXECUTIONS_DATA_MAX_AGE: "336"          # garde 14 jours d'historique d'exécutions
+  # Configuration lue par les workflows
+  TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+  DASHBOARD_TOKEN: ${DASHBOARD_TOKEN}
+  LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+  FT_API_URL: ${FT_API_URL:-https://api.francetravail.io/partenaire/offresdemploi/v2}
+  # Utilisés uniquement par scripts/setup.sh pour créer les identifiants n8n
+  POSTGRES_DB: ${POSTGRES_DB}
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  LLM_API_KEY: ${LLM_API_KEY}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+  FT_CLIENT_ID: ${FT_CLIENT_ID}
+  FT_CLIENT_SECRET: ${FT_CLIENT_SECRET}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: jobhunter-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TIMEZONE:-Europe/Paris}
+      PGTZ: ${TIMEZONE:-Europe/Paris}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"   # accessible depuis ta machine (DBeaver, psql...) mais pas depuis le réseau
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
+    container_name: jobhunter-n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *n8n-env
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+      - ./scripts:/scripts:ro
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: jobhunter-ngrok
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: http n8n:5678 --url=${NGROK_DOMAIN}
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    depends_on:
+      - n8n
+
+volumes:
+  postgres_data:
+  n8n_data:

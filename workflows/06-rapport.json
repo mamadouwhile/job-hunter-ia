@@ -1,0 +1,297 @@
+{
+  "id": "JH06RapportHebdo",
+  "name": "06 · Rapport hebdo & coaching",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 📊 Rapport hebdo & coaching IA\nChaque lundi à 8h (ou `/rapport`) :\n- statistiques de la semaine (offres, candidatures, entretiens, taux de réponse)\n- **compétences les plus demandées** qui te manquent (agrégées sur 30 jours)\n- un **coach IA** analyse tes chiffres et te donne 3 actions concrètes + la compétence à travailler cette semaine",
+        "height": 240,
+        "width": 420,
+        "color": 4
+      },
+      "id": "8df1fc38-4bd9-5d7c-9adf-b4ea2df621ca",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "60d82bc9-3adb-5ccf-9ea1-85e19d00c172",
+      "name": "Chaque lundi à 8h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "740243f6-7f39-5a8c-94b3-a0c2d101dd2d",
+      "name": "Lancer manuellement",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "64af1797-4bcb-5bb9-aae3-2afbed32711f",
+      "name": "Appelé par le bot (/rapport)",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT count(*) FROM jobs WHERE collected_at > now() - interval '7 days')::int AS collected,\n  (SELECT count(*) FROM jobs WHERE scored_at   > now() - interval '7 days')::int AS analysed,\n  (SELECT round(avg(score)) FROM jobs WHERE scored_at > now() - interval '7 days')::int AS avg_score,\n  (SELECT count(*) FROM jobs WHERE scored_at > now() - interval '7 days'\n      AND score >= (SELECT alert_threshold FROM profile WHERE id = 1))::int AS top_matches,\n  (SELECT count(*) FROM documents WHERE kind = 'cover_letter' AND created_at > now() - interval '7 days')::int AS letters,\n  (SELECT count(*) FROM status_history WHERE to_status = 'applied'   AND changed_at > now() - interval '7 days')::int AS applied,\n  (SELECT count(*) FROM status_history WHERE to_status = 'interview' AND changed_at > now() - interval '7 days')::int AS interviews,\n  (SELECT count(*) FROM status_history WHERE to_status = 'offer'     AND changed_at > now() - interval '7 days')::int AS offers,\n  (SELECT count(*) FROM status_history WHERE to_status = 'rejected'  AND changed_at > now() - interval '7 days')::int AS rejections,\n  (SELECT count(*) FROM applications)::int AS total_applications,\n  (SELECT count(*) FROM jobs j JOIN applications a ON a.job_id = j.id WHERE j.status IN ('interview','offer','rejected'))::int AS total_answers,\n  (SELECT coalesce(json_object_agg(status, total), '{}') FROM v_pipeline) AS pipeline,\n  (SELECT coalesce(json_agg(t), '[]') FROM (SELECT skill, occurrences FROM v_missing_skills LIMIT 8) t) AS missing_skills,\n  (SELECT coalesce(json_agg(t), '[]') FROM (\n     SELECT id, title, company, score FROM jobs\n     WHERE status IN ('new','shortlisted') AND score IS NOT NULL AND collected_at > now() - interval '7 days'\n     ORDER BY score DESC LIMIT 5) t) AS best_open,\n  (SELECT row_to_json(p) FROM (SELECT headline, target_roles, skills, years_experience FROM profile WHERE id = 1) p) AS profile;",
+        "options": {}
+      },
+      "id": "1b467209-f016-5662-ad60-b90762228452",
+      "name": "Statistiques de la semaine",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const s = $json;\nconst SYSTEM = \"Tu es un coach carrière tech français, direct, concret et encourageant.\\nÀ partir des statistiques hebdomadaires de recherche d'emploi d'un candidat, produis un bilan utile.\\nBase-toi uniquement sur les chiffres fournis. Donne des actions précises et réalisables cette semaine.\\nRéponds UNIQUEMENT avec un objet JSON valide :\\n{\\n  \\\"headline\\\": \\\"Une phrase de bilan\\\",\\n  \\\"wins\\\": [\\\"2 points positifs max\\\"],\\n  \\\"actions\\\": [{\\\"action\\\": \\\"Action concrète\\\", \\\"why\\\": \\\"Pourquoi, en une phrase\\\"}],\\n  \\\"skill_of_the_week\\\": {\\\"name\\\": \\\"Compétence à travailler\\\", \\\"why\\\": \\\"Pourquoi elle\\\", \\\"how\\\": \\\"Comment progresser en 3-5 h (ressource ou mini-projet)\\\"},\\n  \\\"motivation\\\": \\\"Une phrase de motivation sincère, pas cliché\\\"\\n}\\nDonne exactement 3 actions.\";\nreturn [{\n  json: {\n    stats: s,\n    llm_body: {\n      temperature: 0.5,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: SYSTEM },\n        { role: 'user', content: 'Statistiques de la semaine (JSON) :\\n' + JSON.stringify(s, null, 2) },\n      ],\n    },\n  },\n}];\n"
+      },
+      "id": "2325dd59-985f-5e84-9ce0-6d9c1740f797",
+      "name": "Préparer le coaching",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LLM_BASE_URL || \"https://api.openai.com/v1\").replace(/\\/$/, \"\") }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || \"gpt-4o-mini\", ...$json.llm_body }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "d70b4fd9-3580-5682-84c1-016473e7f4dd",
+      "name": "Coach IA (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        180
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jhLlmApiCred0001",
+          "name": "Job Hunter · API IA (LLM)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst parseLLM = (resp) => {\n  if (resp?.error) throw new Error(resp.error.message || JSON.stringify(resp.error).slice(0, 300));\n  const content = resp?.choices?.[0]?.message?.content;\n  if (!content) throw new Error('Réponse vide du modèle IA');\n  const clean = content.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```$/, '').trim();\n  return JSON.parse(clean);\n};\n// Telegram limite un message à 4096 caractères : on coupe proprement à la fin d'une ligne\nconst fit = (text, max = 3900) => {\n  if (text.length <= max) return text;\n  const cut = text.lastIndexOf('\\n', max);\n  return text.slice(0, cut > 0 ? cut : max) + '\\n…';\n};\n\nconst s = $('Préparer le coaching').first().json.stats;\nconst responseRate = s.total_applications ? Math.round((s.total_answers / s.total_applications) * 100) : 0;\nconst lines = [\n  '📊 <b>Ton rapport de la semaine</b>',\n  '',\n  `📥 ${s.collected} offres collectées · 🤖 ${s.analysed} analysées (score moyen ${s.avg_score ?? '—'})`,\n  `🎯 ${s.top_matches} pépites au-dessus de ton seuil`,\n  `✍️ ${s.letters} lettres · 📨 ${s.applied} candidatures`,\n  `🎤 ${s.interviews} entretiens · 🎉 ${s.offers} offres · ❌ ${s.rejections} refus`,\n  `📈 Taux de réponse global : <b>${responseRate}%</b> (${s.total_answers}/${s.total_applications})`,\n];\nif (s.missing_skills?.length) {\n  lines.push('', '🧩 <b>Compétences les plus demandées qui te manquent</b>');\n  lines.push(...s.missing_skills.slice(0, 5).map((m) => `• ${esc(m.skill)} (${m.occurrences} offres)`));\n}\nif (s.best_open?.length) {\n  lines.push('', '⭐ <b>Meilleures offres encore ouvertes</b>');\n  lines.push(...s.best_open.map((j) => `• ${j.score}/100 · ${esc(j.title)} → /offre_${j.id}`));\n}\n\nlet coach = null;\ntry { coach = parseLLM($json); } catch (e) { /* le rapport part quand même sans coaching */ }\nif (coach) {\n  lines.push('', '🧠 <b>Le mot du coach</b>', esc(coach.headline || ''));\n  if (coach.wins?.length) lines.push(...coach.wins.map((w) => `👏 ${esc(w)}`));\n  if (coach.actions?.length) {\n    lines.push('', '🚀 <b>Tes 3 actions de la semaine</b>');\n    coach.actions.slice(0, 3).forEach((a, i) => lines.push(`${i + 1}. <b>${esc(a.action)}</b> · ${esc(a.why)}`));\n  }\n  const sk = coach.skill_of_the_week;\n  if (sk?.name) lines.push('', `📚 <b>Compétence de la semaine : ${esc(sk.name)}</b>`, esc(sk.why || ''), `👉 ${esc(sk.how || '')}`);\n  if (coach.motivation) lines.push('', `💬 <i>${esc(coach.motivation)}</i>`);\n}\nconst text = fit(lines.join('\\n'));\nreturn [{ json: { text, content: text.replace(/<[^>]+>/g, '') } }];\n"
+      },
+      "id": "66babaaa-819d-5f71-8203-e2c17058adfd",
+      "name": "Composer le rapport",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "7de19faf-66d1-5bbc-b394-5591c32c28b7",
+      "name": "Envoyer le rapport",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1220,
+        80
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "d9ed4d8c-2266-58d3-a2d1-14d93535d533"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO documents (kind, content) VALUES ('weekly_report', $1) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.content ] }}"
+        }
+      },
+      "id": "88205bdf-8f23-5301-9120-9ab4a85dde66",
+      "name": "Archiver le rapport",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1220,
+        280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Chaque lundi à 8h": {
+      "main": [
+        [
+          {
+            "node": "Statistiques de la semaine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lancer manuellement": {
+      "main": [
+        [
+          {
+            "node": "Statistiques de la semaine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Appelé par le bot (/rapport)": {
+      "main": [
+        [
+          {
+            "node": "Statistiques de la semaine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Statistiques de la semaine": {
+      "main": [
+        [
+          {
+            "node": "Préparer le coaching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer le coaching": {
+      "main": [
+        [
+          {
+            "node": "Coach IA (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coach IA (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Composer le rapport",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Composer le rapport": {
+      "main": [
+        [
+          {
+            "node": "Envoyer le rapport",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Archiver le rapport",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true,
+    "errorWorkflow": "JH08Erreurs00001"
+  },
+  "pinData": {},
+  "active": true,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

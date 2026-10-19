@@ -1,0 +1,500 @@
+{
+  "id": "JH04Lettre000001",
+  "name": "04 · Lettre de motivation",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## ✍️ Lettre de motivation sur mesure\nDéclenché par le bouton **✍️ Lettre** ou `/lettre_12`.\nL'IA croise l'offre et ton CV pour écrire :\n- une **lettre** personnalisée (sans inventer d'expérience)\n- un **email court** d'accompagnement\n- des **conseils** pour la candidature\n\nLa lettre est envoyée en message **et** en fichier `.txt` prêt à éditer, puis archivée en base.",
+        "height": 300,
+        "width": 420,
+        "color": 6
+      },
+      "id": "3585bc3f-4d53-51b4-a49a-659ad5884c49",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "133e8a57-1d93-5e55-a5a4-aac9d2d14121",
+      "name": "Appelé par le bot",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT j.id, j.title, j.company, j.location, j.contract_type, j.description, j.url,\n       j.key_skills, j.strengths, j.gaps, row_to_json(p) AS profile\nFROM jobs j CROSS JOIN profile p\nWHERE j.id = $1::int AND p.id = 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id ] }}"
+        }
+      },
+      "id": "1a03a27f-74df-56fe-aab4-3aa7da810052",
+      "name": "Offre et profil",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "248646bb-1e37-5774-b3fd-8be1f6f36c6f",
+              "leftValue": "={{ !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "ce1cee86-0ba2-5aa7-9f6f-86fde4735a2f",
+      "name": "Offre trouvée ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = $json;\nconst p = j.profile || {};\nconst list = (a) => (Array.isArray(a) && a.length ? a.join(', ') : 'non précisé');\nconst SYSTEM = \"Tu es un expert du recrutement en France qui rédige des lettres de motivation percutantes.\\nRègles :\\n- Lettre en français, 220 à 320 mots, ton professionnel, sincère et dynamique (pas de formules creuses).\\n- Structure : accroche liée à l'entreprise ou au poste, 2 expériences/compétences du CV reliées précisément aux besoins de l'offre, motivation pour CETTE entreprise, conclusion avec proposition d'échange.\\n- Utilise UNIQUEMENT les expériences et compétences présentes dans le profil. N'invente rien (ni chiffre, ni diplôme, ni expérience).\\n- Pas d'en-tête d'adresse : commence par « Madame, Monsieur, » et termine par une formule de politesse et le nom du candidat.\\n\\nRéponds UNIQUEMENT avec un objet JSON valide :\\n{\\n  \\\"subject\\\": \\\"Objet de la candidature\\\",\\n  \\\"letter\\\": \\\"Texte complet de la lettre, paragraphes séparés par \\\\n\\\\n\\\",\\n  \\\"email\\\": \\\"Email court (60-90 mots) pour accompagner la candidature\\\",\\n  \\\"tips\\\": [\\\"3 conseils concrets pour maximiser cette candidature\\\"]\\n}\";\n\nreturn [{\n  json: {\n    job_id: j.id,\n    llm_body: {\n      temperature: 0.6,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: SYSTEM },\n        {\n          role: 'user',\n          content: [\n            '### CANDIDAT',\n            `Nom : ${p.full_name || ''}`,\n            `Titre : ${p.headline || ''}`,\n            `Compétences : ${list(p.skills)}`,\n            `Expérience : ${p.years_experience ?? 'non précisé'} ans`,\n            `CV :\\n${(p.cv_text || 'non fourni').slice(0, 6000)}`,\n            '',\n            '### OFFRE',\n            `Poste : ${j.title}`,\n            `Entreprise : ${j.company || 'non précisée'}`,\n            `Lieu : ${j.location || ''} · Contrat : ${j.contract_type || ''}`,\n            `Compétences clés : ${list(j.key_skills)}`,\n            `Points forts du candidat identifiés : ${list(j.strengths)}`,\n            `Description :\\n${(j.description || '').slice(0, 6000)}`,\n          ].join('\\n'),\n        },\n      ],\n    },\n  },\n}];\n"
+      },
+      "id": "ebc5ea90-90e0-55fe-9736-69a823f89b98",
+      "name": "Préparer le prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LLM_BASE_URL || \"https://api.openai.com/v1\").replace(/\\/$/, \"\") }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || \"gpt-4o-mini\", ...$json.llm_body }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "1198ea0b-d137-5b2b-80be-b8be523f5019",
+      "name": "Rédaction IA (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        -100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jhLlmApiCred0001",
+          "name": "Job Hunter · API IA (LLM)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst parseLLM = (resp) => {\n  if (resp?.error) throw new Error(resp.error.message || JSON.stringify(resp.error).slice(0, 300));\n  const content = resp?.choices?.[0]?.message?.content;\n  if (!content) throw new Error('Réponse vide du modèle IA');\n  const clean = content.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```$/, '').trim();\n  return JSON.parse(clean);\n};\n// Telegram limite un message à 4096 caractères : on coupe proprement à la fin d'une ligne\nconst fit = (text, max = 3900) => {\n  if (text.length <= max) return text;\n  const cut = text.lastIndexOf('\\n', max);\n  return text.slice(0, cut > 0 ? cut : max) + '\\n…';\n};\n\nconst job = $('Offre et profil').first().json;\nlet r;\ntry {\n  r = parseLLM($json);\n  if (!r.letter) throw new Error('lettre absente de la réponse');\n} catch (e) {\n  return [{ json: { ok: false, chat_id: $env.TELEGRAM_CHAT_ID, text: `⚠️ La rédaction de la lettre a échoué (${esc(e.message)}). Réessaie avec /lettre_${job.id}.` } }];\n}\n\nconst tips = (Array.isArray(r.tips) ? r.tips : []).slice(0, 3);\nconst fullText = [\n  `Objet : ${r.subject || 'Candidature – ' + job.title}`,\n  '',\n  r.letter.trim(),\n  '',\n  '-----',\n  'Email d\\'accompagnement :',\n  '',\n  (r.email || '').trim(),\n].join('\\n');\n\nconst message = fit([\n  `✍️ <b>Lettre pour « ${esc(job.title)} »</b>${job.company ? ' · ' + esc(job.company) : ''}`,\n  '',\n  `<b>Objet :</b> ${esc(r.subject || '')}`,\n  '',\n  esc(r.letter.trim()),\n  '',\n  '📧 <b>Email d\\'accompagnement</b>',\n  esc((r.email || '').trim()),\n  ...(tips.length ? ['', '💡 <b>Conseils</b>', ...tips.map((t) => `• ${esc(t)}`)] : []),\n].join('\\n'));\n\nconst slug = String(job.company || job.title).toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);\nreturn [{\n  json: {\n    ok: true,\n    job_id: job.id,\n    url: job.url || 'https://francetravail.fr',\n    chat_id: $env.TELEGRAM_CHAT_ID,\n    text: message,\n    full_text: fullText,\n    file_name: `lettre-${slug || job.id}.txt`,\n  },\n}];\n"
+      },
+      "id": "9000f3a6-71b9-5985-95a2-2e0e725ddc72",
+      "name": "Mettre en forme la lettre",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4620f803-17ca-5193-90b5-fe078d771f42",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "7a8908e9-6d88-5171-9ba1-7b3593c187cf",
+      "name": "Lettre générée ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH doc AS (\n  INSERT INTO documents (job_id, kind, content) VALUES ($1::int, 'cover_letter', $2)\n  RETURNING id\n), shortlist AS (\n  UPDATE jobs SET status = 'shortlisted' WHERE id = $1::int AND status = 'new' RETURNING id\n)\nSELECT (SELECT id FROM doc) AS document_id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id, $json.full_text ] }}"
+        }
+      },
+      "id": "6502c07b-3005-534a-a702-2af65275c896",
+      "name": "Archiver la lettre",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1700,
+        -260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        },
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ J'ai postulé",
+                    "additionalFields": {
+                      "callback_data": "=apply:{{ $json.job_id }}"
+                    }
+                  },
+                  {
+                    "text": "🔁 Autre version",
+                    "additionalFields": {
+                      "callback_data": "=letter:{{ $json.job_id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🔗 Ouvrir l'offre pour postuler",
+                    "additionalFields": {
+                      "url": "={{ $json.url }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "57f80a80-4109-5e9d-a6ba-ae499c5b13c4",
+      "name": "Envoyer la lettre",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1700,
+        -100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "e9574a94-8b7f-54a5-8401-d3feb5aeadda"
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "full_text",
+        "options": {
+          "fileName": "={{ $json.file_name }}",
+          "encoding": "utf8"
+        }
+      },
+      "id": "0cfcf926-1a13-5405-9f21-51688e5bae7c",
+      "name": "Créer le fichier .txt",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1700,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendDocument",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "📎 Version éditable de ta lettre"
+        }
+      },
+      "id": "0cfac540-08f2-540d-8ebd-26e9f66a92e3",
+      "name": "Envoyer le fichier",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1940,
+        80
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "2563cea2-dd73-5d0f-b0fd-c07c95f1dca7"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=❌ Offre #{{ $('Appelé par le bot').first().json.job_id }} introuvable. Tape /offres pour voir tes offres.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "c2b415ec-44cd-56fb-bb7b-febdf848544a",
+      "name": "Offre introuvable",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "e7ed0ba2-b09b-5320-9435-99891e65c5a5"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "1e555657-93ea-5447-9f9e-edb433a4387f",
+      "name": "Signaler l'échec",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1700,
+        260
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "27494e2b-5216-5f47-84cc-9a9fbc3a9c28"
+    }
+  ],
+  "connections": {
+    "Appelé par le bot": {
+      "main": [
+        [
+          {
+            "node": "Offre et profil",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Offre et profil": {
+      "main": [
+        [
+          {
+            "node": "Offre trouvée ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Offre trouvée ?": {
+      "main": [
+        [
+          {
+            "node": "Préparer le prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Offre introuvable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer le prompt": {
+      "main": [
+        [
+          {
+            "node": "Rédaction IA (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rédaction IA (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Mettre en forme la lettre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mettre en forme la lettre": {
+      "main": [
+        [
+          {
+            "node": "Lettre générée ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lettre générée ?": {
+      "main": [
+        [
+          {
+            "node": "Archiver la lettre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Envoyer la lettre",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Créer le fichier .txt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Signaler l'échec",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Créer le fichier .txt": {
+      "main": [
+        [
+          {
+            "node": "Envoyer le fichier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true,
+    "errorWorkflow": "JH08Erreurs00001"
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

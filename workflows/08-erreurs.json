@@ -1,0 +1,142 @@
+{
+  "id": "JH08Erreurs00001",
+  "name": "08 · Alertes erreurs",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🚨 Gestion des erreurs\nTous les autres workflows pointent vers celui-ci (**Settings → Error workflow**).\nEn cas de panne : l'erreur est journalisée en base (visible sur le dashboard) et tu es prévenu sur Telegram.",
+        "height": 200,
+        "width": 400,
+        "color": 2
+      },
+      "id": "8f2fe93a-474b-5e74-b929-de6966598998",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "3cbdc0d1-90e6-5134-96c0-7635e99e2170",
+      "name": "En cas d'erreur",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_errors (workflow_name, node_name, message, execution_url)\nVALUES ($1, $2, $3, $4)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.workflow?.name ?? 'inconnu', $json.execution?.lastNodeExecuted ?? 'inconnu', String($json.execution?.error?.message ?? 'Erreur inconnue').slice(0, 1000), $json.execution?.url ?? '' ] }}"
+        }
+      },
+      "id": "dc1b1d09-a9d3-5923-814b-d6e5a3235c1f",
+      "name": "Journaliser l'erreur",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst e = $('En cas d\\'erreur').first().json;\nreturn [{ json: { text: [\n  `🚨 <b>Erreur dans « ${esc(e.workflow?.name)} »</b>`,\n  `Nœud : <code>${esc(e.execution?.lastNodeExecuted)}</code>`,\n  esc(String(e.execution?.error?.message ?? 'Erreur inconnue').slice(0, 500)),\n  ...(e.execution?.url ? ['', esc(e.execution.url)] : []),\n].join('\\n') } }];\n"
+      },
+      "id": "73b5d958-fcd2-528c-a8df-af37aa6d9ff1",
+      "name": "Préparer l'alerte",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "126ea350-606f-572a-b42a-de85b2595bc0",
+      "name": "Prévenir sur Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "7082d7b3-1610-5b5d-9fd8-2c8cd301bebc"
+    }
+  ],
+  "connections": {
+    "En cas d'erreur": {
+      "main": [
+        [
+          {
+            "node": "Journaliser l'erreur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Journaliser l'erreur": {
+      "main": [
+        [
+          {
+            "node": "Préparer l'alerte",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer l'alerte": {
+      "main": [
+        [
+          {
+            "node": "Prévenir sur Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

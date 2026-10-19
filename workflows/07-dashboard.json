@@ -1,0 +1,220 @@
+{
+  "id": "JH07Dashboard001",
+  "name": "07 · Dashboard web",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 📈 Dashboard web\nOuvre **http://localhost:5678/webhook/jobhunter?token=TON_TOKEN** (ou `/dashboard` dans Telegram).\nPage HTML générée à la volée depuis PostgreSQL : KPIs, funnel, activité sur 14 jours, pipeline façon kanban, meilleures offres, compétences à renforcer, santé des sources et erreurs récentes.\n🔒 Protégé par le token `DASHBOARD_TOKEN` du fichier `.env`.",
+        "height": 240,
+        "width": 440,
+        "color": 5
+      },
+      "id": "67fb6028-7632-5906-8587-efcf85be51f4",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "path": "jobhunter",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "58fe5011-2628-55b8-9756-49bb74973279",
+      "name": "GET /jobhunter",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "0d3c9a8e-5b2f-4c71-8e44-7f6b1a2c3d4e"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0b7b70e4-2726-51a5-953a-f24f9e87dbbd",
+              "leftValue": "={{ $json.query?.token ?? \"\" }}",
+              "rightValue": "={{ $env.DASHBOARD_TOKEN || \"__token_non_configure__\" }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "72b7c5ed-7ec8-5b08-9e15-f244d643e690",
+      "name": "Token valide ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT full_name FROM profile WHERE id = 1) AS full_name,\n  (SELECT alert_threshold FROM profile WHERE id = 1) AS threshold,\n  (SELECT count(*) FROM jobs)::int AS total_jobs,\n  (SELECT count(*) FROM jobs WHERE collected_at > now() - interval '24 hours')::int AS jobs_24h,\n  (SELECT count(*) FROM jobs WHERE scored_at IS NULL)::int AS pending,\n  (SELECT round(avg(score)) FROM jobs WHERE score IS NOT NULL)::int AS avg_score,\n  (SELECT count(*) FROM jobs WHERE score >= (SELECT alert_threshold FROM profile WHERE id = 1))::int AS top_matches,\n  (SELECT count(*) FROM applications)::int AS applications,\n  (SELECT count(*) FROM jobs j JOIN applications a ON a.job_id = j.id WHERE j.status IN ('interview','offer','rejected'))::int AS answered,\n  (SELECT count(*) FROM documents WHERE kind = 'cover_letter')::int AS letters,\n  (SELECT coalesce(json_object_agg(status, total), '{}') FROM v_pipeline) AS pipeline,\n  (SELECT coalesce(json_agg(t), '[]') FROM (\n     SELECT id, title, company, location, score, verdict, status, url, to_char(collected_at, 'DD/MM') AS day\n     FROM jobs WHERE score IS NOT NULL AND status IN ('new','shortlisted')\n     ORDER BY score DESC, collected_at DESC LIMIT 12) t) AS top_jobs,\n  (SELECT coalesce(json_agg(t), '[]') FROM (\n     SELECT j.id, j.title, j.company, j.status, j.score, to_char(a.applied_at, 'DD/MM') AS applied,\n            (current_date - a.applied_at::date) AS days, a.followup_count\n     FROM jobs j JOIN applications a ON a.job_id = j.id\n     ORDER BY j.status_changed_at DESC LIMIT 60) t) AS applications_list,\n  (SELECT coalesce(json_agg(t), '[]') FROM (SELECT skill, occurrences FROM v_missing_skills LIMIT 10) t) AS missing_skills,\n  (SELECT coalesce(json_agg(t ORDER BY t.bucket), '[]') FROM (\n     SELECT least(score / 10, 9) * 10 AS bucket, count(*)::int AS n\n     FROM jobs WHERE score IS NOT NULL GROUP BY 1) t) AS score_histogram,\n  (SELECT coalesce(json_agg(t ORDER BY t.day), '[]') FROM (\n     SELECT to_char(d, 'DD/MM') AS label, d::date AS day,\n            (SELECT count(*) FROM jobs WHERE collected_at::date = d::date)::int AS collected,\n            (SELECT count(*) FROM status_history WHERE to_status = 'applied' AND changed_at::date = d::date)::int AS applied\n     FROM generate_series(current_date - 13, current_date, interval '1 day') d) t) AS activity,\n  (SELECT coalesce(json_agg(t), '[]') FROM (\n     SELECT 'France Travail' AS kind, keywords AS name, active, last_count,\n            to_char(last_run_at, 'DD/MM HH24:MI') AS last_run, NULL::text AS error FROM searches\n     UNION ALL\n     SELECT 'RSS', name, active, last_count, to_char(last_fetched_at, 'DD/MM HH24:MI'), last_error FROM feeds) t) AS sources,\n  (SELECT coalesce(json_agg(t), '[]') FROM (\n     SELECT workflow_name, node_name, message, to_char(created_at, 'DD/MM HH24:MI') AS at\n     FROM workflow_errors ORDER BY created_at DESC LIMIT 5) t) AS errors;",
+        "options": {}
+      },
+      "id": "d06028de-fe40-54ee-aa39-cd6cce6b9f1e",
+      "name": "Données du dashboard",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        500,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst d = $json;\nconst P = d.pipeline || {};\nconst pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);\nconst scoreClass = (s) => (s >= 85 ? 'hot' : s >= 70 ? 'good' : s >= 50 ? 'mid' : 'low');\nconst LABEL = { new: 'Nouvelle', shortlisted: 'Sélectionnée', applied: 'Postulé', interview: 'Entretien', offer: 'Offre', rejected: 'Refus', ignored: 'Ignorée', ghosted: 'Sans réponse' };\n\n// --- Graphique d'activité (SVG) ---\nconst act = d.activity || [];\nconst maxAct = Math.max(1, ...act.map((a) => Math.max(a.collected, a.applied)));\nconst W = 640, H = 180, bw = W / Math.max(1, act.length);\nconst bars = act.map((a, i) => {\n  const h1 = (a.collected / maxAct) * (H - 30), h2 = (a.applied / maxAct) * (H - 30);\n  return `<g><title>${a.label} : ${a.collected} offres, ${a.applied} candidatures</title>\n    <rect x=\"${i * bw + 4}\" y=\"${H - 20 - h1}\" width=\"${bw / 2 - 4}\" height=\"${h1}\" rx=\"3\" class=\"b1\"/>\n    <rect x=\"${i * bw + bw / 2}\" y=\"${H - 20 - h2}\" width=\"${bw / 2 - 4}\" height=\"${h2}\" rx=\"3\" class=\"b2\"/>\n    ${i % 2 === 0 ? `<text x=\"${i * bw + bw / 2}\" y=\"${H - 4}\" text-anchor=\"middle\">${a.label}</text>` : ''}</g>`;\n}).join('');\n\n// --- Funnel ---\nconst applied = d.applications || 0;\nconst funnel = [\n  ['Offres analysées', d.total_jobs - d.pending],\n  [`Pépites (≥ ${d.threshold})`, d.top_matches],\n  ['Candidatures', applied],\n  ['Entretiens', (P.interview || 0) + (P.offer || 0)],\n  ['Offres reçues', P.offer || 0],\n];\nconst fMax = Math.max(1, funnel[0][1]);\nconst funnelHtml = funnel.map(([l, v]) => `<div class=\"frow\"><span>${l}</span><div class=\"fbar\"><i style=\"width:${Math.max(2, pct(v, fMax))}%\"></i></div><b>${v}</b></div>`).join('');\n\n// --- Histogramme des scores ---\nconst hist = Array.from({ length: 10 }, (_, i) => (d.score_histogram || []).find((h) => h.bucket === i * 10)?.n || 0);\nconst hMax = Math.max(1, ...hist);\nconst histHtml = hist.map((n, i) => `<div class=\"hcol\" title=\"${i * 10}-${i * 10 + 9} : ${n} offres\"><i class=\"${scoreClass(i * 10 + 5)}\" style=\"height:${pct(n, hMax)}%\"></i><span>${i * 10}</span></div>`).join('');\n\n// --- Kanban ---\nconst cols = ['applied', 'interview', 'offer', 'rejected', 'ghosted'];\nconst kanban = cols.map((c) => {\n  const items = (d.applications_list || []).filter((a) => a.status === c);\n  return `<div class=\"col\"><h4>${LABEL[c]} <small>${items.length}</small></h4>${items.map((a) =>\n    `<div class=\"card\"><b>${esc(a.title)}</b><span>${esc(a.company || '—')}</span><em>Postulé le ${a.applied} · J+${a.days}${a.followup_count ? ' · ' + a.followup_count + ' relance(s)' : ''}</em></div>`).join('') || '<p class=\"empty\">—</p>'}</div>`;\n}).join('');\n\nconst topRows = (d.top_jobs || []).map((j) => `<tr><td><span class=\"score ${scoreClass(j.score)}\">${j.score}</span></td>\n  <td><a href=\"${esc(j.url || '#')}\" target=\"_blank\" rel=\"noopener\">${esc(j.title)}</a><small>#${j.id} · ${j.day}</small></td>\n  <td>${esc(j.company || '—')}</td><td>${esc(j.location || '—')}</td><td>${LABEL[j.status]}</td></tr>`).join('');\n\nconst sk = d.missing_skills || [];\nconst skMax = Math.max(1, ...sk.map((s) => s.occurrences));\nconst skills = sk.map((s) => `<div class=\"frow\"><span>${esc(s.skill)}</span><div class=\"fbar alt\"><i style=\"width:${pct(s.occurrences, skMax)}%\"></i></div><b>${s.occurrences}</b></div>`).join('') || '<p class=\"empty\">Pas encore assez de données.</p>';\n\nconst sources = (d.sources || []).map((s) => `<tr><td><span class=\"dot ${!s.active ? 'off' : s.error ? 'warn' : 'on'}\"></span>${esc(s.kind)}</td><td>${esc(s.name)}</td><td>${s.last_count ?? '—'}</td><td>${s.last_run || 'jamais'}</td><td class=\"err\">${esc((s.error || '').slice(0, 60))}</td></tr>`).join('');\nconst errors = (d.errors || []).map((e) => `<li><b>${e.at}</b> · ${esc(e.workflow_name)} › ${esc(e.node_name)} : ${esc((e.message || '').slice(0, 140))}</li>`).join('') || '<li class=\"empty\">Aucune erreur récente 🎉</li>';\n\nconst kpis = [\n  ['Offres collectées', d.total_jobs, `+${d.jobs_24h} en 24 h`],\n  ['Score moyen', d.avg_score ?? '—', `${d.pending} en attente d'analyse`],\n  ['Pépites', d.top_matches, `score ≥ ${d.threshold}`],\n  ['Candidatures', applied, `${d.letters} lettres générées`],\n  ['Taux de réponse', pct(d.answered, applied) + '%', `${d.answered} réponses`],\n  ['Entretiens', (P.interview || 0) + (P.offer || 0), `${P.offer || 0} offre(s) reçue(s)`],\n].map(([l, v, s]) => `<div class=\"kpi\"><span>${l}</span><b>${v}</b><small>${s}</small></div>`).join('');\n\nconst html = `<!doctype html><html lang=\"fr\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Job Hunter IA · Dashboard</title>\n<style>\n:root{--bg:#f6f7fb;--panel:#fff;--text:#1d2433;--muted:#6b7385;--line:#e6e8ef;--accent:#4f46e5;--accent2:#14b8a6;--hot:#ef4444;--good:#22c55e;--mid:#f59e0b;--low:#94a3b8}\n@media (prefers-color-scheme:dark){:root{--bg:#0f1220;--panel:#171b2e;--text:#e8eaf2;--muted:#9aa3b8;--line:#272c45;--accent:#818cf8;--accent2:#2dd4bf}}\n*{box-sizing:border-box}body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}\nheader{padding:28px 32px 8px;display:flex;justify-content:space-between;align-items:end;flex-wrap:wrap;gap:8px}\nh1{margin:0;font-size:24px}h1 span{color:var(--accent)}header p{margin:0;color:var(--muted)}\nmain{padding:16px 32px 40px;display:grid;gap:16px;grid-template-columns:repeat(12,1fr)}\n.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}\n.panel h3{margin:0 0 12px;font-size:15px}.s12{grid-column:span 12}.s8{grid-column:span 8}.s6{grid-column:span 6}.s4{grid-column:span 4}\n@media(max-width:1000px){.s8,.s6,.s4{grid-column:span 12}main,header{padding-left:16px;padding-right:16px}}\n.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}\n.kpi{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column}\n.kpi span{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}.kpi b{font-size:28px}.kpi small{color:var(--muted)}\nsvg{width:100%;height:auto}svg text{fill:var(--muted);font-size:10px}.b1{fill:var(--accent)}.b2{fill:var(--accent2)}\n.legend{display:flex;gap:14px;color:var(--muted);font-size:12px}.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px}\n.frow{display:grid;grid-template-columns:150px 1fr 40px;gap:10px;align-items:center;margin:7px 0}.frow span{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.fbar{background:var(--line);border-radius:6px;height:12px;overflow:hidden}.fbar i{display:block;height:100%;background:var(--accent);border-radius:6px}.fbar.alt i{background:var(--mid)}\n.hist{display:flex;gap:6px;align-items:end;height:150px}.hcol{flex:1;display:flex;flex-direction:column;justify-content:end;height:100%;text-align:center}\n.hcol i{display:block;border-radius:5px 5px 0 0;min-height:2px}.hcol span{color:var(--muted);font-size:11px}\n.hot{background:var(--hot)}.good{background:var(--good)}.mid{background:var(--mid)}.low{background:var(--low)}\ntable{width:100%;border-collapse:collapse}td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12px}\ntd small{display:block;color:var(--muted)}a{color:var(--text);text-decoration:none;font-weight:600}a:hover{color:var(--accent)}\n.score{display:inline-block;min-width:36px;text-align:center;padding:3px 6px;border-radius:8px;color:#fff;font-weight:700}\n.kanban{display:grid;grid-template-columns:repeat(5,minmax(160px,1fr));gap:12px;overflow-x:auto}.col{background:var(--bg);border-radius:12px;padding:10px}\n.col h4{margin:2px 4px 10px;font-size:13px}.col h4 small{color:var(--muted);font-weight:400}\n.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px;display:flex;flex-direction:column;gap:2px}\n.card span,.card em{color:var(--muted);font-size:12px;font-style:normal}.empty{color:var(--muted)}\n.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}.dot.on{background:var(--good)}.dot.warn{background:var(--mid)}.dot.off{background:var(--low)}\n.err{color:var(--hot);font-size:12px}ul{margin:0;padding-left:18px}li{margin:6px 0}footer{color:var(--muted);text-align:center;padding:0 0 30px}\n</style></head><body>\n<header><div><h1>🎯 Job Hunter <span>IA</span></h1><p>Tableau de bord de ${esc(d.full_name || 'ta recherche')}</p></div>\n<p>Mis à jour le ${new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })}</p></header>\n<main>\n<section class=\"s12 kpis\">${kpis}</section>\n<section class=\"panel s8\"><h3>Activité des 14 derniers jours</h3><div class=\"legend\"><span><i class=\"b1\" style=\"background:var(--accent)\"></i>Offres collectées</span><span><i style=\"background:var(--accent2)\"></i>Candidatures</span></div><svg viewBox=\"0 0 ${W} ${H}\" role=\"img\" aria-label=\"Activité\">${bars}</svg></section>\n<section class=\"panel s4\"><h3>Entonnoir de recrutement</h3>${funnelHtml}</section>\n<section class=\"panel s12\"><h3>Pipeline des candidatures</h3><div class=\"kanban\">${kanban}</div></section>\n<section class=\"panel s8\"><h3>Meilleures offres à traiter</h3><table><thead><tr><th>Score</th><th>Poste</th><th>Entreprise</th><th>Lieu</th><th>Statut</th></tr></thead><tbody>${topRows || '<tr><td colspan=\"5\" class=\"empty\">Aucune offre analysée pour l’instant.</td></tr>'}</tbody></table></section>\n<section class=\"panel s4\"><h3>Distribution des scores</h3><div class=\"hist\">${histHtml}</div><h3 style=\"margin-top:22px\">Compétences à renforcer</h3>${skills}</section>\n<section class=\"panel s8\"><h3>Santé des sources</h3><table><thead><tr><th>Type</th><th>Source</th><th>Offres</th><th>Dernière collecte</th><th></th></tr></thead><tbody>${sources}</tbody></table></section>\n<section class=\"panel s4\"><h3>Erreurs récentes</h3><ul>${errors}</ul></section>\n</main><footer>Propulsé par n8n · PostgreSQL · IA</footer></body></html>`;\n\nreturn [{ json: { html } }];\n"
+      },
+      "id": "673456e9-0928-5df9-bff2-dedeb78c2288",
+      "name": "Générer la page HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "e1d7eedf-ddbf-5d98-b46e-29c89f0d8253",
+      "name": "Afficher le dashboard",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        980,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "🔒 Accès refusé : ajoute ?token=... à l'URL (DASHBOARD_TOKEN dans .env).",
+        "options": {
+          "responseCode": 401,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "738b7832-612a-5ff2-9b22-73f4a631c571",
+      "name": "Accès refusé",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        140
+      ]
+    }
+  ],
+  "connections": {
+    "GET /jobhunter": {
+      "main": [
+        [
+          {
+            "node": "Token valide ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token valide ?": {
+      "main": [
+        [
+          {
+            "node": "Données du dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Accès refusé",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Données du dashboard": {
+      "main": [
+        [
+          {
+            "node": "Générer la page HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Générer la page HTML": {
+      "main": [
+        [
+          {
+            "node": "Afficher le dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true,
+    "errorWorkflow": "JH08Erreurs00001"
+  },
+  "pinData": {},
+  "active": true,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

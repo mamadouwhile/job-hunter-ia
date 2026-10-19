@@ -1,0 +1,450 @@
+{
+  "id": "JH02AnalyseIA001",
+  "name": "02 · Analyse IA des offres",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🤖 Analyse IA des offres\nCompare chaque nouvelle offre à **ton profil** (CV, compétences, préférences) et calcule :\n- un **score de compatibilité** 0-100 + un verdict\n- points forts, écarts, **compétences manquantes**\n- signaux d'alerte, salaire estimé, niveau, télétravail\n\nLes offres au-dessus de ton **seuil d'alerte** (`/seuil 75`) t'arrivent sur Telegram avec des boutons d'action.\n\n🔒 Les offres sont « réservées » (`FOR UPDATE SKIP LOCKED`) : deux exécutions en parallèle n'analysent jamais la même offre.",
+        "height": 340,
+        "width": 440,
+        "color": 5
+      },
+      "id": "54d9ec93-6233-531d-b33d-110ee44c7648",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "69287de9-753d-53b9-b1ec-318176745d5a",
+      "name": "Appelé par un autre workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "7b9a1858-3649-54e4-a358-1a7a0f6c2751",
+      "name": "Toutes les 30 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        180
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "8906233d-5c07-504f-af3c-c84f50f8f3b7",
+      "name": "Lancer manuellement",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH picked AS (\n  SELECT id FROM jobs\n  WHERE CASE\n    WHEN $1::int IS NOT NULL THEN id = $1::int\n    ELSE scored_at IS NULL\n         AND score_attempts < 3\n         AND (scoring_started_at IS NULL OR scoring_started_at < now() - interval '15 minutes')\n  END\n  ORDER BY collected_at DESC\n  LIMIT 15\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE jobs j\nSET scoring_started_at = now(), score_attempts = j.score_attempts + 1\nFROM picked\nWHERE j.id = picked.id\nRETURNING j.id, j.title, j.company, j.location, j.contract_type, j.salary,\n          j.description, j.url, j.source, ($1::int IS NOT NULL) AS forced;",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id ?? null ] }}"
+        }
+      },
+      "id": "80c7b3cb-2b44-50f8-bd41-b4048d3d02be",
+      "name": "Réserver les offres à analyser",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM profile WHERE id = 1;",
+        "options": {}
+      },
+      "id": "ecb2ea6b-7e85-5a03-8e73-3c0858460a05",
+      "name": "Profil candidat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        500,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construit un prompt par offre : profil complet du candidat + offre\nconst p = $('Profil candidat').first().json;\nconst list = (a) => (Array.isArray(a) && a.length ? a.join(', ') : 'non précisé');\n\nconst profile = [\n  `Nom : ${p.full_name || 'non précisé'}`,\n  `Titre : ${p.headline || 'non précisé'}`,\n  `Postes visés : ${list(p.target_roles)}`,\n  `Compétences : ${list(p.skills)}`,\n  `Années d'expérience : ${p.years_experience ?? 'non précisé'}`,\n  `Localisations souhaitées : ${list(p.locations)}`,\n  `Contrats souhaités : ${list(p.contract_types)}`,\n  `Télétravail : ${p.remote_preference || 'indifférent'}`,\n  `Salaire minimum : ${p.salary_min ? p.salary_min + ' € brut/an' : 'non précisé'}`,\n  `Langues : ${list(p.languages)}`,\n  `Préférences : ${p.preferences || 'aucune'}`,\n  `CV :\\n${(p.cv_text || 'CV non fourni').slice(0, 6000)}`,\n].join('\\n');\n\nconst SYSTEM = \"Tu es un recruteur tech senior et un coach carrière exigeant mais bienveillant.\\nTu évalues l'adéquation entre un candidat et une offre d'emploi, de façon honnête et argumentée.\\n\\nBarème du score (0-100) :\\n- 85-100 : le profil coche presque tout (compétences, niveau, localisation/télétravail, contrat)\\n- 70-84 : très bonne piste, quelques écarts comblables\\n- 50-69 : piste possible mais écarts significatifs\\n- 0-49 : peu pertinent (métier différent, niveau inadapté, contrat ou lieu incompatibles)\\nPénalise fortement : niveau d'expérience très au-dessus du candidat, contrat ou localisation incompatibles avec ses préférences.\\nN'invente jamais d'information absente de l'offre ou du profil.\\n\\nRéponds UNIQUEMENT avec un objet JSON valide, en français, de la forme :\\n{\\n  \\\"score\\\": 0,\\n  \\\"verdict\\\": \\\"excellent | bon | moyen | faible\\\",\\n  \\\"summary\\\": \\\"Résumé de l'offre en 2 phrases maximum\\\",\\n  \\\"strengths\\\": [\\\"Pourquoi le profil correspond (3 max, phrases courtes)\\\"],\\n  \\\"gaps\\\": [\\\"Écarts entre le profil et l'offre (3 max, phrases courtes)\\\"],\\n  \\\"missing_skills\\\": [\\\"Compétences techniques demandées absentes du profil, noms courts (ex. Docker)\\\"],\\n  \\\"key_skills\\\": [\\\"Compétences clés demandées par l'offre, noms courts (8 max)\\\"],\\n  \\\"red_flags\\\": [\\\"Signaux d'alerte éventuels : exigences irréalistes, salaire flou, flou sur le poste... (peut être vide)\\\"],\\n  \\\"seniority\\\": \\\"junior | confirmé | senior | non précisé\\\",\\n  \\\"remote\\\": \\\"sur site | hybride | full remote | non précisé\\\",\\n  \\\"estimated_salary\\\": \\\"Salaire de l'offre, ou fourchette estimée du marché français (ex. '38-45 k€ brut/an')\\\"\\n}\";\n\n// (PostgreSQL renvoie { success: true } quand aucune offre n'est à analyser : on s'arrête là)\nreturn $('Réserver les offres à analyser').all().filter((i) => i.json.id).map(({ json: j }) => ({\n  json: {\n    job_id: j.id,\n    llm_body: {\n      temperature: 0.2,\n      response_format: { type: 'json_object' },\n      messages: [\n        { role: 'system', content: SYSTEM },\n        {\n          role: 'user',\n          content: [\n            '### PROFIL DU CANDIDAT', profile, '',\n            `### OFFRE #${j.id}`,\n            `Intitulé : ${j.title}`,\n            `Entreprise : ${j.company || 'non précisée'}`,\n            `Lieu : ${j.location || 'non précisé'}`,\n            `Contrat : ${j.contract_type || 'non précisé'}`,\n            `Salaire : ${j.salary || 'non précisé'}`,\n            'Description :', (j.description || '').slice(0, 7000),\n          ].join('\\n'),\n        },\n      ],\n    },\n  },\n}));\n"
+      },
+      "id": "244e8f93-e9e4-56b7-a2db-ab9a9806efea",
+      "name": "Préparer les prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LLM_BASE_URL || \"https://api.openai.com/v1\").replace(/\\/$/, \"\") }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || \"gpt-4o-mini\", ...$json.llm_body }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "658b468f-b876-59a9-970f-b6ca823d3250",
+      "name": "Analyse IA (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        180
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jhLlmApiCred0001",
+          "name": "Job Hunter · API IA (LLM)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retrouve l'élément d'origine d'un item grâce au suivi des « paired items » de n8n\nconst origin = (node, i) => { try { return $(node).itemMatching(i)?.json; } catch (e) { return $(node).all()[i]?.json; } };\nconst parseLLM = (resp) => {\n  if (resp?.error) throw new Error(resp.error.message || JSON.stringify(resp.error).slice(0, 300));\n  const content = resp?.choices?.[0]?.message?.content;\n  if (!content) throw new Error('Réponse vide du modèle IA');\n  const clean = content.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```$/, '').trim();\n  return JSON.parse(clean);\n};\n\n// Valide et nettoie la réponse de l'IA (le modèle peut se tromper de format)\nconst VERDICTS = ['excellent', 'bon', 'moyen', 'faible'];\nconst strings = (a, max = 8) => Array.isArray(a)\n  ? a.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim().slice(0, 160)).slice(0, max)\n  : [];\nconst text = (s, max = 400) => (typeof s === 'string' && s.trim() ? s.trim().slice(0, max) : null);\n\nconst results = $input.all().map((item, i) => {\n  const job_id = origin('Préparer les prompts', i)?.job_id;\n  try {\n    const r = parseLLM(item.json);\n    const score = Math.round(Number(r.score));\n    if (!Number.isFinite(score)) throw new Error('Score manquant dans la réponse IA');\n    const clamped = Math.max(0, Math.min(100, score));\n    const verdict = VERDICTS.includes(String(r.verdict).toLowerCase())\n      ? String(r.verdict).toLowerCase()\n      : clamped >= 85 ? 'excellent' : clamped >= 70 ? 'bon' : clamped >= 50 ? 'moyen' : 'faible';\n    return {\n      job_id,\n      score: clamped,\n      verdict,\n      summary: text(r.summary, 600),\n      strengths: strings(r.strengths, 4),\n      gaps: strings(r.gaps, 4),\n      missing_skills: strings(r.missing_skills, 8).map((s) => s.slice(0, 40)),\n      key_skills: strings(r.key_skills, 10).map((s) => s.slice(0, 40)),\n      red_flags: strings(r.red_flags, 4),\n      seniority: text(r.seniority, 40),\n      remote: text(r.remote, 40),\n      estimated_salary: text(r.estimated_salary, 80),\n      error: null,\n    };\n  } catch (e) {\n    return { job_id, error: String(e.message || e).slice(0, 500) };\n  }\n}).filter((r) => r.job_id);\n\nreturn [{ json: { results } }];\n"
+      },
+      "id": "f630dfc8-d64e-59c5-ba3b-560e9889f25f",
+      "name": "Valider l'analyse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH r AS (\n  SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(\n    job_id int, score int, verdict text, summary text,\n    strengths text[], gaps text[], missing_skills text[], key_skills text[], red_flags text[],\n    seniority text, remote text, estimated_salary text, error text)\n)\nUPDATE jobs j SET\n  score              = COALESCE(r.score, j.score),\n  verdict            = COALESCE(r.verdict, j.verdict),\n  summary            = COALESCE(r.summary, j.summary),\n  strengths          = COALESCE(r.strengths, j.strengths),\n  gaps               = COALESCE(r.gaps, j.gaps),\n  missing_skills     = COALESCE(r.missing_skills, j.missing_skills),\n  key_skills         = COALESCE(r.key_skills, j.key_skills),\n  red_flags          = COALESCE(r.red_flags, j.red_flags),\n  seniority          = COALESCE(r.seniority, j.seniority),\n  remote             = COALESCE(r.remote, j.remote),\n  estimated_salary   = COALESCE(r.estimated_salary, j.estimated_salary),\n  scored_at          = CASE WHEN r.error IS NULL THEN now() ELSE j.scored_at END,\n  score_error        = r.error,\n  scoring_started_at = NULL\nFROM r\nWHERE j.id = r.job_id\nRETURNING j.id, j.title, j.company, j.location, j.contract_type, j.salary, j.estimated_salary,\n          j.url, j.score, j.verdict, j.summary, j.strengths, j.gaps, j.missing_skills,\n          j.red_flags, j.remote, j.alerted_at, (r.error IS NOT NULL) AS failed, r.error;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.results) ] }}"
+        }
+      },
+      "id": "2474e0aa-3634-5fb7-855a-dd1434836f7e",
+      "name": "Enregistrer les analyses",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1460,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst scoreEmoji = (s) => s >= 85 ? '🔥' : s >= 70 ? '✅' : s >= 50 ? '🟡' : '⚪';\n\n// Garde les offres au-dessus du seuil d'alerte (ou l'offre importée à la main)\nconst threshold = $('Profil candidat').first().json.alert_threshold ?? 75;\nconst forced = $('Réserver les offres à analyser').first().json.forced === true;\nconst bullets = (arr) => (arr || []).map((x) => `• ${esc(x)}`).join('\\n');\n\nconst out = [];\nfor (const { json: j } of $input.all()) {\n  if (!j.id) continue;\n  if (j.failed) {\n    if (forced) out.push({ json: { job_id: j.id, url: j.url || 'https://francetravail.fr', text: `⚠️ Je n'ai pas réussi à analyser l'offre #${j.id} (${esc(j.error)}). Réessaie avec /offre_${j.id} plus tard.` } });\n    continue;\n  }\n  if (!forced && (j.score < threshold || j.alerted_at)) continue;\n\n  const lines = [\n    `${scoreEmoji(j.score)} <b>${j.score}/100 · match ${esc(j.verdict)}</b>${forced ? '' : ' · nouvelle pépite !'}`,\n    '',\n    `<b>${esc(j.title)}</b>`,\n    `🏢 ${esc(j.company || 'Entreprise non précisée')}`,\n    `📍 ${esc(j.location || '—')}${j.contract_type ? ' · 📄 ' + esc(j.contract_type) : ''}${j.remote && j.remote !== 'non précisé' ? ' · 🏠 ' + esc(j.remote) : ''}`,\n    `💶 ${esc(j.salary || (j.estimated_salary ? j.estimated_salary + ' (estimé)' : 'non précisé'))}`,\n  ];\n  if (j.summary) lines.push('', `📝 ${esc(j.summary)}`);\n  if (j.strengths?.length) lines.push('', '<b>✅ Pourquoi ça matche</b>', bullets(j.strengths));\n  if (j.gaps?.length) lines.push('', '<b>⚠️ Points d\\'attention</b>', bullets(j.gaps));\n  if (j.missing_skills?.length) lines.push('', `🧩 <b>À renforcer :</b> ${esc(j.missing_skills.join(', '))}`);\n  if (j.red_flags?.length) lines.push('', '<b>🚩 Signaux d\\'alerte</b>', bullets(j.red_flags));\n  lines.push('', `<i>Offre #${j.id} · /offre_${j.id}</i>`);\n\n  out.push({ json: { job_id: j.id, url: j.url || 'https://francetravail.fr', text: lines.join('\\n') } });\n}\nreturn out;\n"
+      },
+      "id": "233005cb-ceab-55bc-a269-8b013eda6a97",
+      "name": "Sélectionner les pépites",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        },
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✍️ Lettre de motivation",
+                    "additionalFields": {
+                      "callback_data": "=letter:{{ $json.job_id }}"
+                    }
+                  },
+                  {
+                    "text": "🎤 Préparer l'entretien",
+                    "additionalFields": {
+                      "callback_data": "=prep:{{ $json.job_id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ J'ai postulé",
+                    "additionalFields": {
+                      "callback_data": "=apply:{{ $json.job_id }}"
+                    }
+                  },
+                  {
+                    "text": "🙈 Pas pour moi",
+                    "additionalFields": {
+                      "callback_data": "=skip:{{ $json.job_id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🔗 Voir l'offre",
+                    "additionalFields": {
+                      "url": "={{ $json.url }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "648ec86c-a76c-5475-a58f-5f5b9602234b",
+      "name": "Alerte Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1940,
+        180
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "a7132502-f044-509f-9ead-2f09543e243e"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE jobs SET alerted_at = now()\nWHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)::int)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($('Sélectionner les pépites').all().map((i) => i.json.job_id)) ] }}"
+        }
+      },
+      "id": "ff1c3cd3-799e-5190-b9b5-b5875b86315e",
+      "name": "Marquer comme alertées",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2180,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Appelé par un autre workflow": {
+      "main": [
+        [
+          {
+            "node": "Réserver les offres à analyser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Toutes les 30 min": {
+      "main": [
+        [
+          {
+            "node": "Réserver les offres à analyser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lancer manuellement": {
+      "main": [
+        [
+          {
+            "node": "Réserver les offres à analyser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Réserver les offres à analyser": {
+      "main": [
+        [
+          {
+            "node": "Profil candidat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Profil candidat": {
+      "main": [
+        [
+          {
+            "node": "Préparer les prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer les prompts": {
+      "main": [
+        [
+          {
+            "node": "Analyse IA (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse IA (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Valider l'analyse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valider l'analyse": {
+      "main": [
+        [
+          {
+            "node": "Enregistrer les analyses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enregistrer les analyses": {
+      "main": [
+        [
+          {
+            "node": "Sélectionner les pépites",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sélectionner les pépites": {
+      "main": [
+        [
+          {
+            "node": "Alerte Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alerte Telegram": {
+      "main": [
+        [
+          {
+            "node": "Marquer comme alertées",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true,
+    "errorWorkflow": "JH08Erreurs00001"
+  },
+  "pinData": {},
+  "active": true,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

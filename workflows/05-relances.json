@@ -1,0 +1,426 @@
+{
+  "id": "JH05Relances0001",
+  "name": "05 · Relances automatiques",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## ⏰ Relances automatiques\nChaque matin de semaine à 9h :\n- repère les candidatures **sans nouvelles depuis 7 jours**\n- l'IA rédige un **email de relance** poli et personnalisé\n- tu le reçois sur Telegram avec des boutons (relancé, entretien, refus, plus tard)\n- après 2 relances sans réponse, la candidature passe en **👻 sans réponse**",
+        "height": 260,
+        "width": 420,
+        "color": 3
+      },
+      "id": "bd99b37e-f88e-572b-9ff7-60daecf5441d",
+      "name": "Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "4fe82d34-0619-5979-9584-1bf500920786",
+      "name": "En semaine à 9h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "bcda8cab-1754-5099-a9b4-11bce438bc92",
+      "name": "Lancer manuellement",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE jobs j SET status = 'ghosted'\nFROM applications a\nWHERE a.job_id = j.id\n  AND j.status = 'applied'\n  AND a.followup_count >= 2\n  AND COALESCE(a.last_followup_at, a.applied_at) < now() - interval '10 days'\nRETURNING j.id, j.title, j.company;",
+        "options": {}
+      },
+      "id": "ae9b4742-8675-5d15-a1c7-1f556918d577",
+      "name": "Classer les candidatures sans réponse",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        -160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst rows = $input.all().map((i) => i.json).filter((r) => r.id);\nif (!rows.length) return [];\nreturn [{ json: { text: [\n  `👻 <b>${rows.length} candidature(s) classée(s) « sans réponse »</b> après 2 relances :`,\n  ...rows.map((r) => `• ${esc(r.title)}${r.company ? ' · ' + esc(r.company) : ''}`),\n  '', 'Pas de panique, c\\'est normal. Concentre-toi sur les nouvelles pépites : /offres',\n].join('\\n') } }];\n"
+      },
+      "id": "1f72d16f-b3b9-5396-9de7-ac2a0db78e5d",
+      "name": "Résumer les classements",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "ac31e301-4d7d-556f-8f59-e07349514924",
+      "name": "Informer des classements",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        -160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "6ef19003-209d-566c-9753-be988b4f80f3"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT a.id AS application_id, a.applied_at, a.followup_count,\n       j.id AS job_id, j.title, j.company, j.url, j.summary,\n       (SELECT content FROM documents d\n         WHERE d.job_id = j.id AND d.kind = 'cover_letter'\n         ORDER BY d.created_at DESC LIMIT 1) AS cover_letter,\n       p.full_name\nFROM applications a\nJOIN jobs j ON j.id = a.job_id\nCROSS JOIN profile p\nWHERE j.status = 'applied'\n  AND a.next_followup_at <= now()\n  AND a.followup_count < 2\nORDER BY a.next_followup_at\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "acc94c13-facc-58f3-beb2-41423cc8cd9f",
+      "name": "Relances à faire",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const SYSTEM = \"Tu rédiges des emails de relance de candidature en français : courts (70-110 mots), polis, confiants, jamais insistants.\\nRappelle le poste et la date de candidature, réaffirme en une phrase la valeur ajoutée du candidat, propose un échange.\\nSi c'est la 2e relance, sois encore plus bref et laisse une porte ouverte élégante.\\nRéponds UNIQUEMENT avec un objet JSON : {\\\"subject\\\": \\\"...\\\", \\\"email\\\": \\\"...\\\"}\";\nreturn $input.all().filter((i) => i.json.application_id).map(({ json: a }) => {\n  const days = Math.round((Date.now() - new Date(a.applied_at).getTime()) / 86400000);\n  return {\n    json: {\n      ...a,\n      days,\n      llm_body: {\n        temperature: 0.5,\n        response_format: { type: 'json_object' },\n        messages: [\n          { role: 'system', content: SYSTEM },\n          { role: 'user', content: [\n            `Candidat : ${a.full_name || ''}`,\n            `Poste : ${a.title} chez ${a.company || \"l'entreprise\"}`,\n            `Candidature envoyée il y a ${days} jours. Relance n°${a.followup_count + 1}.`,\n            `Résumé de l'offre : ${a.summary || ''}`,\n            `Lettre envoyée (extrait) : ${(a.cover_letter || 'non disponible').slice(0, 1500)}`,\n          ].join('\\n') },\n        ],\n      },\n    },\n  };\n});\n"
+      },
+      "id": "232a8cdb-9546-5bd7-82ab-94992d087910",
+      "name": "Préparer les relances",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LLM_BASE_URL || \"https://api.openai.com/v1\").replace(/\\/$/, \"\") }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || \"gpt-4o-mini\", ...$json.llm_body }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "efe0bd81-921e-51a6-ad06-4cb4cbe73c2c",
+      "name": "Rédaction des relances (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jhLlmApiCred0001",
+          "name": "Job Hunter · API IA (LLM)"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retrouve l'élément d'origine d'un item grâce au suivi des « paired items » de n8n\nconst origin = (node, i) => { try { return $(node).itemMatching(i)?.json; } catch (e) { return $(node).all()[i]?.json; } };\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst parseLLM = (resp) => {\n  if (resp?.error) throw new Error(resp.error.message || JSON.stringify(resp.error).slice(0, 300));\n  const content = resp?.choices?.[0]?.message?.content;\n  if (!content) throw new Error('Réponse vide du modèle IA');\n  const clean = content.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```$/, '').trim();\n  return JSON.parse(clean);\n};\n\nreturn $input.all().map((item, i) => {\n  const a = origin('Préparer les relances', i);\n  let subject = `Suivi de ma candidature – ${a.title}`;\n  let email = '';\n  try {\n    const r = parseLLM(item.json);\n    subject = r.subject || subject;\n    email = r.email || '';\n  } catch (e) {\n    email = `(Rédaction automatique indisponible : ${e.message})`;\n  }\n  const text = [\n    `⏰ <b>Relance n°${a.followup_count + 1} à envoyer</b>`,\n    `<b>${esc(a.title)}</b>${a.company ? ' · ' + esc(a.company) : ''}`,\n    `📨 Candidature envoyée il y a ${a.days} jours`,\n    '',\n    `<b>Objet :</b> ${esc(subject)}`,\n    '',\n    esc(email),\n  ].join('\\n');\n  return { json: { application_id: a.application_id, job_id: a.job_id, url: a.url || 'https://francetravail.fr', text, content: `Objet : ${subject}\\n\\n${email}` } };\n});\n"
+      },
+      "id": "114dc88a-fa27-5f06-b0f1-b0a548f4cb54",
+      "name": "Mettre en forme les relances",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        },
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ Relance envoyée",
+                    "additionalFields": {
+                      "callback_data": "=followup:{{ $json.application_id }}"
+                    }
+                  },
+                  {
+                    "text": "⏳ Dans 3 jours",
+                    "additionalFields": {
+                      "callback_data": "=snooze:{{ $json.application_id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🎤 Entretien obtenu",
+                    "additionalFields": {
+                      "callback_data": "=interview:{{ $json.job_id }}"
+                    }
+                  },
+                  {
+                    "text": "❌ Refus reçu",
+                    "additionalFields": {
+                      "callback_data": "=rejected:{{ $json.job_id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🔗 Revoir l'offre",
+                    "additionalFields": {
+                      "url": "={{ $json.url }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "8832821d-8362-54f5-8023-945db1bd6806",
+      "name": "Proposer la relance",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1220,
+        100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "jhTelegramCred01",
+          "name": "Job Hunter · Bot Telegram"
+        }
+      },
+      "webhookId": "38ec9b46-b5d1-5a48-a3bd-b8f4bcdd429a"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH r AS (\n  SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(application_id int, job_id int, content text)\n), docs AS (\n  INSERT INTO documents (job_id, kind, content) SELECT job_id, 'followup', content FROM r RETURNING id\n)\n-- Si tu ne cliques sur rien, je te le rappelle dans 2 jours\nUPDATE applications a SET next_followup_at = now() + interval '2 days'\nFROM r WHERE a.id = r.application_id\nRETURNING a.id;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($('Mettre en forme les relances').all().map((i) => ({ application_id: i.json.application_id, job_id: i.json.job_id, content: i.json.content }))) ] }}"
+        }
+      },
+      "id": "f5bd58cc-f14d-5f71-91b8-09f689d8fdf0",
+      "name": "Archiver et reprogrammer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1460,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "jhPostgresCred01",
+          "name": "Job Hunter · PostgreSQL"
+        }
+      },
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "En semaine à 9h": {
+      "main": [
+        [
+          {
+            "node": "Classer les candidatures sans réponse",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Relances à faire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lancer manuellement": {
+      "main": [
+        [
+          {
+            "node": "Classer les candidatures sans réponse",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Relances à faire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classer les candidatures sans réponse": {
+      "main": [
+        [
+          {
+            "node": "Résumer les classements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Résumer les classements": {
+      "main": [
+        [
+          {
+            "node": "Informer des classements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Relances à faire": {
+      "main": [
+        [
+          {
+            "node": "Préparer les relances",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer les relances": {
+      "main": [
+        [
+          {
+            "node": "Rédaction des relances (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rédaction des relances (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Mettre en forme les relances",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mettre en forme les relances": {
+      "main": [
+        [
+          {
+            "node": "Proposer la relance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proposer la relance": {
+      "main": [
+        [
+          {
+            "node": "Archiver et reprogrammer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "saveManualExecutions": true,
+    "errorWorkflow": "JH08Erreurs00001"
+  },
+  "pinData": {},
+  "active": true,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
